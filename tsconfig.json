@@ -4,7 +4,9 @@
     "strict": true,
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "noEmit": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist",
     "lib": ["es2022", "dom", "dom.iterable"]
   },
   "include": ["src"]

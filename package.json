@@ -6,28 +6,44 @@
   "license": "MIT",
   "description": "Active Context Management plugin for OpenCode — pin, prune, scan, compact, and manage context with surgical precision",
   "keywords": ["opencode", "plugin", "context", "memory", "acm"],
+  "author": "Rick Ross",
   "repository": {
     "type": "git",
-    "url": "https://github.com/irelate/opencode-acm"
+    "url": "https://github.com/rickross/opencode-acm"
   },
+  "main": "dist/index.js",
   "exports": {
-    ".": "./src/index.ts",
-    "./server": "./src/index.ts"
+    ".": "./dist/index.js",
+    "./server": "./dist/index.js"
   },
-  "peerDependencies": {
-    "@opencode-ai/plugin": "*",
-    "@opencode-ai/sdk": "*"
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "opencode": {
+    "type": "plugin",
+    "hooks": [
+      "tool",
+      "experimental.chat.messages.transform",
+      "experimental.chat.system.transform",
+      "event"
+    ]
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.3.11",
+    "@opencode-ai/sdk": "^1.3.11",
+    "zod": "^3.0.0"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "1.3.11",
-    "@opencode-ai/sdk": "1.3.11",
     "@tsconfig/node22": "^22.0.0",
     "@types/bun": "latest",
     "@types/node": "^22.0.0",
-    "typescript": "^5.0.0",
-    "zod": "^3.0.0"
+    "typescript": "^5.0.0"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "build": "bun build ./src/index.ts --outdir ./dist --target node",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
   }
 }
