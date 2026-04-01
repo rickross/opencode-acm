@@ -69,6 +69,16 @@ const plugin: Plugin = async (input) => {
         for (const part of msg.parts) {
           if (part.type === "text" && !(part as any).synthetic) {
             newParts.push({ ...part, text: COMPACTED_STUB } as any)
+          } else if (part.type === "tool") {
+            const p = part as any
+            if (p.state?.status === "completed" && p.state?.output !== undefined) {
+              newParts.push({
+                ...part,
+                state: { ...p.state, output: COMPACTED_STUB },
+              } as any)
+            } else {
+              newParts.push(part)
+            }
           } else {
             newParts.push(part)
           }
