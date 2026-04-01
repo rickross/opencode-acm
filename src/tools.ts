@@ -75,7 +75,7 @@ When called with no parameters, lists all currently pinned messages.`,
   args: {
     message_id: z.string().optional().describe("Message ID to pin (omit to list pinned messages)"),
     search_string: z.string().optional().describe("Search for message containing this text"),
-    priority: z.number().int().min(1).max(10).optional().default(10).describe("Priority level (1-10, default 10)"),
+
   },
 
   async execute(params, ctx) {
@@ -457,9 +457,8 @@ Accepts partial message IDs (last 12 chars) for convenience.`,
     messages: z.array(z.object({
       id: z.string().describe("Message ID (full or partial)"),
       pinned: z.boolean().optional().describe("Set to true to never compact this message"),
-      priority: z.number().int().min(0).max(10).optional().describe("Priority (0=compact now, 10=keep)"),
+      prune: z.boolean().optional().describe("Set to true to immediately compact this message"),
     })).describe("Array of messages to mark"),
-    execute_prune: z.boolean().optional().default(false).describe("If true, immediately compact priority=0 messages"),
   },
 
   async execute(params, ctx) {
@@ -475,11 +474,11 @@ Accepts partial message IDs (last 12 chars) for convenience.`,
         else Store.unpinMessage(ctx.sessionID, msg.info.id)
       }
 
-      if (item.priority === 0 && params.execute_prune) {
+      if (item.prune) {
         Store.compactMessage(ctx.sessionID, msg.info.id)
-        results.push(`✓ ${msg.info.id.slice(-12)}: compacted (priority=0)`)
+        results.push(`✓ ${msg.info.id.slice(-12)}: compacted`)
       } else {
-        results.push(`✓ ${msg.info.id.slice(-12)}: marked (pinned=${item.pinned ?? "unchanged"}, priority=${item.priority ?? "unchanged"})`)
+        results.push(`✓ ${msg.info.id.slice(-12)}: marked (pinned=${item.pinned ?? "unchanged"})`)
       }
     }
 
