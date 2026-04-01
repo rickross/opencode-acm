@@ -147,16 +147,18 @@ const plugin: Plugin = async (input) => {
     // Event listener: finalize pending MKP pinning after tool execution
     // -----------------------------------------------------------------------
     event: async ({ event }) => {
-      // After a tool completes, check if there's a pending MKP pin for this session
+      // After a tool completes, drain any pending MKP pins for this session
       if (event.type === "session.updated") {
         const sessionID = (event.properties as any)?.sessionID
         if (!sessionID) return
 
-        const pending = Tools.pendingMkp.get(sessionID)
-        if (!pending) return
+        const queue = Tools.pendingMkp.get(sessionID)
+        if (!queue || queue.length === 0) return
 
-        // Store the MKP association
-        Store.setMkp(sessionID, pending.messageId, pending.name)
+        // Drain the full queue — handles back-to-back or parallel acm_load calls
+        for (const pending of queue) {
+          Store.setMkp(sessionID, pending.messageId, pending.name)
+        }
         Tools.pendingMkp.delete(sessionID)
       }
     },

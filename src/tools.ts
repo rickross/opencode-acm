@@ -397,7 +397,9 @@ Use acm_unload to remove loaded packages by name.`,
     const formatted = `# [MKP: ${params.name}]\n\n${content}\n\n---\n*Loaded from: ${source}*`
 
     if (params.pin) {
-      pendingMkp.set(ctx.sessionID, { name: params.name, messageId: ctx.messageID })
+      const queue = pendingMkp.get(ctx.sessionID) ?? []
+      queue.push({ name: params.name, messageId: ctx.messageID })
+      pendingMkp.set(ctx.sessionID, queue)
     }
 
     const sizeKB = (content.length / 1024).toFixed(1)
@@ -405,8 +407,8 @@ Use acm_unload to remove loaded packages by name.`,
   },
 })
 
-// Map of sessionID -> pending MKP to pin after tool execution completes
-export const pendingMkp = new Map<string, { name: string; messageId: string }>()
+// Map of sessionID -> queue of pending MKPs to pin after tool execution completes
+export const pendingMkp = new Map<string, Array<{ name: string; messageId: string }>>()
 
 // ---------------------------------------------------------------------------
 // acm_unload
