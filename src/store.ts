@@ -169,3 +169,125 @@ export function unloadMkp(sessionId: string, mkpName: string): string | null {
 export function deleteSession(sessionId: string): void {
   db().run("DELETE FROM acm_metadata WHERE session_id = ?", [sessionId])
 }
+
+/**
+ * Insert an OpenCode-native compaction marker pair into opencode.db.
+ *
+ * This is the same format OpenCode uses natively, so filterCompacted will
+ * recognize it and both OpenCode and ACM tools agree on active context.
+ *
+ * Structure:
+ *   1. User message with type="compaction" part  (the boundary marker)
+ *   2. Assistant message with summary=true, parentID pointing to #1
+ */
+export function insertCompactionMarker(
+  sessionId: string,
+  markerMsgId: string,
+  summaryMsgId: string,
+  atTime: number,
+): void {
+  const ocDbPath = path.join(DATA_DIR, "opencode.db")
+  const ocDb = new Database(ocDbPath)
+  ocDb.run("PRAGMA journal_mode=WAL")
+
+  try {
+    ocDb.run("BEGIN")
+
+    // Remove any existing ACM-inserted compaction markers for this session
+    // (so we don't accumulate stale ones — only one active boundary at a time)
+    ocDb.run(`
+      DELETE FROM message WHERE session_id = ? AND id LIKE 'msg_acm_compact_%'
+    `, [sessionId])
+    ocDb.run(`
+      DELETE FROM message WHERE session_id = ? AND id LIKE 'msg_acm_summary_%'
+    `, [sessionId])
+
+    // Insert user message (the compaction boundary marker)
+    ocDb.run(`
+      INSERT OR IGNORE INTO message (id, session_id, time_created, time_updated, data)
+      VALUES (?, ?, ?, ?, ?)
+    `, [
+      markerMsgId,
+      sessionId,
+      atTime,
+      atTime,
+      JSON.stringify({
+        role: "user",
+        id: markerMsgId,
+        sessionID: sessionId,
+        time: { created: atTime },
+      }),
+    ])
+
+    // Insert compaction part into the user message
+    ocDb.run(`
+      INSERT OR IGNORE INTO part (id, message_id, session_id, time_created, time_updated, data)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [
+      `prt_acm_compact_${markerMsgId.slice(-12)}`,
+      markerMsgId,
+      sessionId,
+      atTime,
+      atTime,
+      JSON.stringify({ type: "compaction", auto: false, overflow: false }),
+    ])
+
+    // Insert assistant summary message
+    ocDb.run(`
+      INSERT OR IGNORE INTO message (id, session_id, time_created, time_updated, data)
+      VALUES (?, ?, ?, ?, ?)
+    `, [
+      summaryMsgId,
+      sessionId,
+      atTime + 1,
+      atTime + 1,
+      JSON.stringify({
+        role: "assistant",
+        id: summaryMsgId,
+        sessionID: sessionId,
+        time: { created: atTime + 1, completed: atTime + 1 },
+        parentID: markerMsgId,
+        modelID: "acm",
+        providerID: "acm",
+        mode: "compaction",
+        agent: "compaction",
+        summary: true,
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        finish: "stop",
+      }),
+    ])
+
+    // Insert step-start and step-finish parts for the summary message
+    ocDb.run(`
+      INSERT OR IGNORE INTO part (id, message_id, session_id, time_created, time_updated, data)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [
+      `prt_acm_ss_${summaryMsgId.slice(-12)}`,
+      summaryMsgId,
+      sessionId,
+      atTime + 1,
+      atTime + 1,
+      JSON.stringify({ type: "step-start" }),
+    ])
+
+    ocDb.run(`
+      INSERT OR IGNORE INTO part (id, message_id, session_id, time_created, time_updated, data)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [
+      `prt_acm_sf_${summaryMsgId.slice(-12)}`,
+      summaryMsgId,
+      sessionId,
+      atTime + 1,
+      atTime + 1,
+      JSON.stringify({ type: "step-finish", reason: "stop", cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }),
+    ])
+
+    ocDb.run("COMMIT")
+  } catch (e) {
+    ocDb.run("ROLLBACK")
+    throw e
+  } finally {
+    ocDb.close()
+  }
+}

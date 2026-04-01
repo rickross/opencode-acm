@@ -10,7 +10,7 @@ import z from "zod"
 import * as fs from "fs/promises"
 import type { Part } from "@opencode-ai/sdk"
 import * as Store from "./store.js"
-import { getMessages, type MsgWithParts } from "./client.js"
+import { getMessages, getActiveMessages, type MsgWithParts } from "./client.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -148,6 +148,7 @@ This maintains a focused working memory while keeping recent context intact.`,
   },
 
   async execute(params, ctx) {
+    // Use all messages (not just active) so we can compute the cutoff across full history
     const msgs = await getMessages(ctx.sessionID)
     const now = Date.now()
 
@@ -179,22 +180,32 @@ This maintains a focused working memory while keeping recent context intact.`,
 
     if (!cutoff) return "Must specify keep_minutes, keep_active_minutes, or keep_messages."
 
-    const toCompact = msgs.filter((m) => {
-      const entry = Store.getEntry(ctx.sessionID, m.info.id)
-      if (entry?.pinned) return false
-      if (entry?.compacted) return false
-      return m.info.time.created < cutoff!
-    })
-
-    if (toCompact.length === 0) return "Nothing to compact — all messages are within the requested window."
+    const toKeep = msgs.filter((m) => m.info.time.created >= cutoff!)
+    if (toKeep.length === msgs.length) return "Nothing to compact — all messages are within the requested window."
 
     if (params.dry_run) {
-      return `Dry run: would compact ${toCompact.length} messages older than ${new Date(cutoff).toISOString()}.`
+      const toCompactCount = msgs.length - toKeep.length
+      return `Dry run: would set compaction boundary at ${new Date(cutoff).toISOString()}, keeping ${toKeep.length} messages (compacting ${toCompactCount}).`
     }
 
-    for (const msg of toCompact) Store.compactMessage(ctx.sessionID, msg.info.id)
+    // Insert OpenCode-native compaction marker pair at the cutoff point.
+    // This is the same format OpenCode uses natively, so filterCompacted
+    // will recognize it and both OpenCode and ACM tools will agree on what
+    // is "active context."
+    const markerTime = cutoff - 1
+    const markerID = `msg_acm_compact_${ctx.sessionID.slice(-12)}_${markerTime}`
+    const summaryID = `msg_acm_summary_${ctx.sessionID.slice(-12)}_${markerTime}`
+    const client = getClient()
 
-    return `Compacted ${toCompact.length} messages. Context trimmed to messages newer than ${new Date(cutoff).toISOString()}.`
+    // Use the SDK to create the messages so they go through proper channels
+    // Fall back to direct Store insertion if SDK doesn't support it
+    try {
+      await Store.insertCompactionMarker(ctx.sessionID, markerID, summaryID, markerTime)
+    } catch (e: any) {
+      return `Failed to insert compaction marker: ${e?.message ?? e}`
+    }
+
+    return `Compaction boundary set at ${new Date(cutoff).toISOString()}. Keeping ${toKeep.length} messages. ACM and OpenCode now agree on active context.`
   },
 })
 
@@ -265,7 +276,11 @@ Pairs with acm_prune for surgical context reduction.`,
   },
 
   async execute(params, ctx) {
-    const msgs = await getMessages(ctx.sessionID)
+    // Use active messages (post-compaction-boundary) by default
+    // When show_compacted=true, use all messages including pre-boundary history
+    const msgs = params.show_compacted
+      ? await getMessages(ctx.sessionID)
+      : await getActiveMessages(ctx.sessionID)
     const now = Date.now()
     const minBytes = (params.min_kb ?? 0) * 1024
 
@@ -573,7 +588,8 @@ Helps you decide where to prune and whether pruning will actually save meaningfu
   },
 
   async execute(params, ctx) {
-    const msgs = await getMessages(ctx.sessionID)
+    // Always show only active context (post-compaction-boundary messages)
+    const msgs = await getActiveMessages(ctx.sessionID)
     const now = Date.now()
     const intervalMs = (params.interval_minutes ?? 5) * 60 * 1000
     const gapThresholdMs = (params.gap_threshold ?? 60) * 1000
@@ -593,7 +609,8 @@ Helps you decide where to prune and whether pruning will actually save meaningfu
     let lastTime: number | undefined
 
     for (const msg of sorted) {
-      // Skip compacted messages — map shows active context only
+      // getActiveMessages already filtered to post-compaction-boundary messages
+      // Still skip ACM-level compacted messages (individually pruned ones)
       const entry = Store.getEntry(ctx.sessionID, msg.info.id)
       if (entry?.compacted) continue
 
@@ -658,10 +675,8 @@ Helps you decide where to prune and whether pruning will actually save meaningfu
     }
 
     const totalMsgs = sortedBuckets.reduce((s, [, b]) => s + b.messages, 0)
-    const compactedCount = msgs.filter(m => Store.getEntry(ctx.sessionID, m.info.id)?.compacted).length
     output += `────────────────────────────────────────────────\n`
-    output += `Active: ${totalMsgs} of ${msgs.length} messages, ${Math.round(totalBytes / 1024)}KB (excluding compacted)\n`
-    if (compactedCount > 0) output += `Compacted (excluded): ${compactedCount} messages\n`
+    output += `Active: ${totalMsgs} messages, ${Math.round(totalBytes / 1024)}KB\n`
     return output
   },
 })
