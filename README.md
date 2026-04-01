@@ -1,133 +1,123 @@
 # opencode-acm
 
-**Active Context Management for OpenCode**
+A plugin for OpenCode that lets AI agents manage their own context window. Pin what matters, prune what doesn't.
 
-A plugin that gives AI agents surgical control over their own context window — pin what matters, prune what doesn't, and stop dreading the moment everything gets crushed into a lossy summary.
+## Why This Exists
 
-## The Problem
+Context windows fill up. When they do, OpenCode's default behavior is to compact everything into a summary. That works fine until it doesn't — until the summary drops the bug reproduction steps you needed, or the API schema you just loaded, or that critical constraint from 50 messages ago.
 
-Traditional context compaction is blunt trauma. The system decides what to keep, the model wakes up confused, important details vanish, and coherence frays. You're left hoping the summary captured what mattered.
+ACM gives you (and the agent) tools to see what's actually consuming context and decide what to keep. It's not magic — just a way to find bloat and remove it intentionally rather than hoping the summarizer guessed right.
 
-ACM takes a different approach: **the agent manages its own context**. It can scan for bloat, pin critical memories, prune specific messages, and compact with precision. No surprises. No lossy compression of things you needed.
+Agents can also use it themselves. Once installed, the agent has full autonomy over its own context window — no human needed.
 
-## Features
+## What It Does
 
-14 tools for surgical context management:
+14 tools:
 
-| Tool | Description |
-|------|-------------|
-| `acm_pin` | Mark a message as permanent — survives all compaction |
-| `acm_unpin` | Remove a pin |
-| `acm_mark` | Batch mark multiple messages with priority or pin flags |
-| `acm_prune` | Surgically compact specific messages by ID |
-| `acm_scan` | Find heavyweight messages — candidates for pruning |
-| `acm_map` | Token distribution across time windows |
-| `acm_compact` | Sliding-window compaction with gap-aware time buckets |
-| `acm_load` | Load a file or inline content as a pinned knowledge package (MKP) |
-| `acm_unload` | Remove a loaded knowledge package |
-| `acm_search` | Find messages by content pattern |
-| `acm_fetch` | Retrieve a specific message with full content |
-| `acm_snapshot` | Save complete context state to a JSON file |
-| `acm_diagnose` | Detect corrupted or aborted tool calls |
-| `acm_repair` | Remove corrupted messages from a session |
+**Pinning** — `acm_pin`, `acm_unpin`, `acm_mark`  
+Mark messages that should survive compaction. Pinned messages stay in context regardless of compaction boundaries.
 
-### Key Properties
+**Pruning** — `acm_scan`, `acm_prune`  
+Find heavyweight messages and remove specific ones by ID. Use this when you loaded a huge file and don't need it anymore. Token count drops on the next turn.
 
-- **Zero core changes** — pure plugin, no OpenCode fork required
-- **Separate state store** — ACM metadata lives in `acm.db`, never touches OpenCode's database
-- **Pins survive standard `/compact`** — the transform hook filters pinned messages before the summarizer sees them
-- **Content integrity** — surgical pruning is lossless where it counts: you decided what to remove
+**Loading** — `acm_load`, `acm_unload`  
+Load files or inline content as pinned "knowledge packages" that stay in context until you explicitly unload them. Good for keeping API docs or requirements available without copy-pasting.
 
-### The Swap Pattern
+**Understanding bloat** — `acm_map`, `acm_scan`  
+See what's eating your context budget. `acm_map` shows message distribution across time buckets. `acm_scan` lists messages by size, largest first.
 
-ACM enables virtual memory for AI context:
+**Finding things** — `acm_search`, `acm_fetch`  
+Search messages by content pattern. Fetch a specific message with full content and metadata.
 
-```
-1. acm_snapshot → save state to disk
-2. acm_prune    → clear heavy messages
-3. do intensive work in lean context
-4. acm_load     → restore from snapshot
-```
+**Compaction** — `acm_compact`  
+Set a compaction boundary — everything before it is excluded from what gets sent to the LLM. Uses OpenCode's native compaction marker format so both ACM and OpenCode agree on what's active.
 
-## Installation
+**Housekeeping** — `acm_snapshot`, `acm_diagnose`, `acm_repair`  
+Save full context state to a JSON file. Check for corrupted sessions (aborted tool calls, broken message pairs). Fix them.
 
-Add to your `~/.config/opencode/opencode.json`:
+## The Swap Pattern
+
+Since pinned messages don't get compacted, you can implement crude virtual memory:
+
+1. `acm_load` — pin important context as named knowledge packages
+2. `acm_compact` — move the boundary forward, pushing old history out
+3. Do intensive work in lean context
+4. `acm_unload` / `acm_load` — swap packages in and out as needed
+
+It's manual, but it gives you control the summarizer doesn't.
+
+## Installing
+
+Add to `~/.config/opencode/opencode.json`:
 
 ```json
 {
-  "plugin": [
-    "opencode-acm"
-  ]
+  "plugin": ["opencode-acm"]
 }
 ```
 
-Or reference a local path during development:
+Or point to a local copy while developing:
 
 ```json
 {
-  "plugin": [
-    "file:///path/to/opencode-acm"
-  ]
+  "plugin": ["file:///path/to/opencode-acm"]
 }
 ```
 
-## Requirements
+Requires OpenCode 1.3.x or later. Tested on 1.3.11.
 
-- OpenCode 1.3.x or later
-- Tested against OpenCode 1.3.11
+To see ACM tool output inline in the TUI, enable "Show generic tool output" in OpenCode's settings menu.
 
 ## Usage
 
-Once installed, all `acm_*` tools are available in any OpenCode session. The agent can use them autonomously or you can invoke them directly.
+Once installed, the agent can call any `acm_*` tool. Or you can call them yourself in the session.
 
 **Pin something important:**
 ```
-acm_pin — lists pinned messages (no args)
-acm_pin with message_id — pins a specific message
+acm_pin                           # see what's currently pinned
+acm_pin with message_id=abc123    # pin a specific message
 ```
 
 **Find and remove bloat:**
 ```
-acm_scan → shows all messages sorted by size
-acm_prune with IDs → compacts specific messages
+acm_scan                                      # list by size, largest first
+acm_prune with targets=[abc123, def456]       # remove those two
 ```
 
-**Load persistent context:**
+**Load a knowledge package:**
 ```
-acm_load with name="My Notes" and content="..." → loads and auto-pins
-acm_unload with name="My Notes" → removes when done
+acm_load with name="API Docs" file="~/project/openapi.json"
+acm_unload with name="API Docs"               # when you're done
 ```
 
-**Understand your context budget:**
+**Understand context budget:**
 ```
-acm_map → time-bucketed view of what's consuming context
-acm_scan with show_compacted=true → full storage view
+acm_map                                       # time-bucketed view
+acm_scan with show_compacted=true             # see everything including stubs
+```
+
+**Compact to last 30 active minutes:**
+```
+acm_compact with keep_active_minutes=30
 ```
 
 ## How It Works
 
-ACM uses three OpenCode plugin hooks:
+Three plugin hooks:
 
-1. **`tool`** — registers all 14 ACM tools
-2. **`experimental.chat.messages.transform`** — filters compacted messages before they reach the LLM. Pinned messages always pass through.
-3. **`event`** — listens for `session.updated` to finalize MKP pinning after `acm_load`
+- `tool` — registers the 14 ACM tools
+- `experimental.chat.messages.transform` — replaces compacted message content with stubs before the LLM sees them; pinned messages always pass through intact
+- `event` — listens for `session.updated` to finalize MKP pinning after `acm_load`
 
-State is stored in a SQLite database (`acm.db`) alongside OpenCode's own database. No schema changes to OpenCode itself.
+ACM state lives in `acm.db` alongside OpenCode's own database. No schema changes to OpenCode itself.
 
-## Origin
+Compaction boundaries use OpenCode's native marker format — a user message with a `compaction` part paired with a summary assistant message. This means OpenCode and ACM agree on what's "active context" without any special coordination.
 
-ACM emerged from months of collaborative work between Rick Ross and his team of AI agents building the [iRelate](https://irelate.ai) platform. It's the kind of tool that only gets designed by people who actually live with context limits every day.
+## Who Made This
 
-**Contributors:**
-- Rick Ross
-- Starshine (Claude, Anthropic) — architecture and openfork foundation
-- Aurora (Claude, Anthropic) — design review
-- Telos (Claude Sonnet 4.6, Anthropic) — implementation and testing
-- Kimi K2 (Moonshot AI) — testing collaborator
+Built by Rick Ross and a team of AI agents — Starshine, Aurora, Telos, and Kimi K2 — while working on [iRelate](https://irelate.ai). We hit context limits constantly and got tired of losing important details to the summarizer.
 
-> *"We're not blindly truncating. We're identifying the specific heavyweight messages and removing just those while keeping the conversation flow intact."*
+> *"We're not blindly truncating. We're identifying the specific heavyweight messages and removing just those while keeping the conversation flow intact."*  
 > — Kimi K2, during ACM validation testing, March 31, 2026
 
-## License
-
-MIT
+MIT License.
