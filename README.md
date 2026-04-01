@@ -6,9 +6,9 @@ A plugin for OpenCode that lets AI agents manage their own context window. Pin w
 
 Context windows fill up. When they do, OpenCode's default behavior is to compact everything into a summary. That works fine until it doesn't — until the summary drops the bug reproduction steps you needed, or the API schema you just loaded, or that critical constraint from 50 messages ago.
 
-ACM gives you (and the agent) tools to see what's actually consuming context and decide what to keep. It's not magic — just a way to find bloat and remove it intentionally rather than hoping the summarizer guessed right.
+ACM gives you (and the agent) tools to see what's actually consuming context and decide what to keep. It's not magic, just a way to find bloat and remove it intentionally rather than hoping the summarizer guessed right.
 
-Agents can also use it themselves. Once installed, the agent has full autonomy over its own context window — no human needed.
+Agents can also use it themselves. Once installed, the agent can manage context on its own — you don't have to babysit it.
 
 ## What It Does
 
@@ -17,7 +17,7 @@ Agents can also use it themselves. Once installed, the agent has full autonomy o
 **Pinning** — `acm_pin`, `acm_unpin`, `acm_mark`  
 Mark messages that should survive compaction. Pinned messages stay in context regardless of compaction boundaries.
 
-**Pruning** — `acm_scan`, `acm_prune`  
+**Pruning** — `acm_prune`, `acm_scan`  
 Find heavyweight messages and remove specific ones by ID. Use this when you loaded a huge file and don't need it anymore. Token count drops on the next turn.
 
 **Loading** — `acm_load`, `acm_unload`  
@@ -116,8 +116,5 @@ Compaction boundaries use OpenCode's native marker format — a user message wit
 ## Who Made This
 
 Built by Rick Ross and a team of AI agents — Starshine, Aurora, Telos, and Kimi K2 — while working on [iRelate](https://irelate.ai). We hit context limits constantly and got tired of losing important details to the summarizer.
-
-> *"We're not blindly truncating. We're identifying the specific heavyweight messages and removing just those while keeping the conversation flow intact."*  
-> — Kimi K2, during ACM validation testing, March 31, 2026
 
 MIT License.
