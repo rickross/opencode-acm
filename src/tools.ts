@@ -43,15 +43,16 @@ function getPartText(part: Part): string {
   return ""
 }
 
-function messageBytes(msg: { parts: Part[] }): { bytes: number; preview: string } {
-  let bytes = 0
+/** Returns character count (not bytes or tokens) as a rough size proxy */
+function messageChars(msg: { parts: Part[] }): { chars: number; preview: string } {
+  let chars = 0
   let preview = ""
   for (const part of msg.parts) {
     const text = getPartText(part)
-    bytes += text.length
+    chars += text.length
     if (!preview && text) preview = text.slice(0, 100)
   }
-  return { bytes, preview }
+  return { chars, preview }
 }
 
 // ---------------------------------------------------------------------------
@@ -281,9 +282,9 @@ Returns a list sorted by size — candidates for pruning.
 Pairs with acm_prune for surgical context reduction.`,
 
   args: {
-    min_kb: z.number().min(0).max(100).optional().default(0).describe("Minimum size in KB to include (default: 0 = all messages)"),
+    min_kb: z.number().min(0).max(100).optional().default(0).describe("Minimum size (in ~KB of characters) to include (default: 0 = all messages)"),
     show_compacted: z.boolean().optional().default(false).describe("Include already-compacted messages"),
-    debug: z.boolean().optional().default(false).describe("Dump every message with full ID and exact byte count, sorted by creation time for diffing against acm_map. Note: sequential calls will differ by 1 message due to timing — the first call's result is added to context before the second call reads it."),
+    debug: z.boolean().optional().default(false).describe("Dump every message with full ID and exact character count, sorted by creation time for diffing against acm_map. Note: sequential calls will differ by 1 message due to timing — the first call's result is added to context before the second call reads it."),
   },
 
   async execute(params, ctx) {
@@ -295,19 +296,19 @@ Pairs with acm_prune for surgical context reduction.`,
     const now = Date.now()
     const minBytes = (params.min_kb ?? 0) * 1024
 
-    interface Item { id: string; bytes: number; minutesAgo: number; role: string; preview: string; compacted: boolean; pinned: boolean }
+    interface Item { id: string; chars: number; minutesAgo: number; role: string; preview: string; compacted: boolean; pinned: boolean }
     const items: Item[] = []
 
     for (const msg of msgs) {
       const entry = Store.getEntry(ctx.sessionID, msg.info.id)
       if (entry?.compacted && !params.show_compacted) continue
 
-      const { bytes, preview } = messageBytes(msg)
-      if (bytes < minBytes) continue
+      const { chars, preview } = messageChars(msg)
+      if (chars < minBytes) continue
 
       items.push({
         id: msg.info.id,
-        bytes,
+        chars,
         minutesAgo: Math.round((now - msg.info.time.created) / 60000),
         role: (msg.info as any).role ?? "unknown",
         preview: preview.replace(/\n/g, "\\n"),
@@ -316,32 +317,32 @@ Pairs with acm_prune for surgical context reduction.`,
       })
     }
 
-    const totalKB = items.reduce((s, i) => s + i.bytes, 0) / 1024
+    const totalKchars = items.reduce((s, i) => s + i.chars, 0) / 1000
 
     if (params.debug) {
       // Sort by creation time (oldest first) for comparison with acm_map
       const byTime = [...items].sort((a, b) => a.minutesAgo - b.minutesAgo)
-      let output = `SCAN DEBUG: ${items.length} messages, ${Math.round(totalKB * 1024)}B total\n\n`
-      output += `${"ID".padEnd(32)} ${"bytes".padStart(8)} role\n`
+      let output = `SCAN DEBUG: ${items.length} messages, ${Math.round(totalKchars * 1000)} chars total\n\n`
+      output += `${"ID".padEnd(32)} ${"chars".padStart(8)} role\n`
       output += `${"─".repeat(32)} ${"─".repeat(8)} ${"─".repeat(10)}\n`
       for (const item of byTime) {
         const flags = [item.pinned ? "P" : "", item.compacted ? "C" : ""].filter(Boolean).join("")
-        output += `${item.id.padEnd(32)} ${item.bytes.toString().padStart(8)} [${item.role}]${flags ? ` (${flags})` : ""}\n`
+        output += `${item.id.padEnd(32)} ${item.chars.toString().padStart(8)} [${item.role}]${flags ? ` (${flags})` : ""}\n`
       }
-      output += `\nTotal: ${Math.round(totalKB * 1024)}B (${Math.round(totalKB)}KB)`
+      output += `\nTotal: ${Math.round(totalKchars * 1000)} chars (~${Math.round(totalKchars)}K)`
       return output
     }
 
-    items.sort((a, b) => b.bytes - a.bytes)
+    items.sort((a, b) => b.chars - a.chars)
     const minKbDisplay = params.min_kb ?? 0
-    if (items.length === 0) return minKbDisplay > 0 ? `No messages larger than ${minKbDisplay}KB found.` : `No messages found.`
+    if (items.length === 0) return minKbDisplay > 0 ? `No messages larger than ~${minKbDisplay}K chars found.` : `No messages found.`
 
     let output = minKbDisplay > 0
-      ? `Scan results (>${minKbDisplay}KB): ${items.length} items, ${Math.round(totalKB)}KB total\n\n`
-      : `Scan results (all): ${items.length} items, ${Math.round(totalKB)}KB total\n\n`
+      ? `Scan results (>~${minKbDisplay}K chars): ${items.length} items, ~${Math.round(totalKchars)}K chars total\n\n`
+      : `Scan results (all): ${items.length} items, ~${Math.round(totalKchars)}K chars total\n\n`
     for (const item of items) {
       const tags = [item.pinned ? "PINNED" : "", item.compacted ? "COMPACTED" : ""].filter(Boolean).join(",")
-      output += `${item.id.slice(-12)}  ${Math.round(item.bytes / 1024)}KB  ${item.minutesAgo}m ago  [${item.role}]${tags ? ` (${tags})` : ""}\n`
+      output += `${item.id.slice(-12)}  ~${Math.round(item.chars / 1000)}K chars  ${item.minutesAgo}m ago  [${item.role}]${tags ? ` (${tags})` : ""}\n`
       output += `    "${item.preview.replace(/`/g, "'").replace(/</g, "<").replace(/>/g, ">")}..."\n\n`
     }
     output += `Use acm_prune with message IDs above to compact.`
@@ -492,7 +493,10 @@ Accepts partial message IDs (last 12 chars) for convenience.`,
 // acm_search
 // ---------------------------------------------------------------------------
 export const acm_search = tool({
-  description: `Search for messages in active context by content.
+  description: `Search and get relevant context for any programming task using Exa Code API.
+
+Searches the FULL session history by default — including messages before compaction boundaries.
+This is intentional: acm_search acts as a wayback machine for recalling past context.
 
 Examples:
   acm_search({ query: "WebGPU" })
@@ -591,17 +595,17 @@ Accepts partial message IDs (last 12 chars) for convenience.`,
 // acm_map
 // ---------------------------------------------------------------------------
 export const acm_map = tool({
-  description: `Show token distribution across time windows to understand where your context budget is going.
+  description: `Show message size distribution across time windows to understand where your context budget is going.
 
-Displays message counts and token usage for time buckets.
-Helps you decide where to prune and whether pruning will actually save meaningful tokens.`,
+Displays message counts and character counts (rough size proxy) for time buckets.
+Helps you decide where to prune and whether pruning will actually save meaningful context.`,
 
   args: {
     interval_minutes: z.number().int().min(1).optional().default(5).describe("Bucket size in active minutes (default: 5)"),
     gap_threshold: z.number().int().min(1).optional().default(60).describe("Gap threshold in seconds - pauses active time clock for gaps longer than this (default: 60)"),
     show_largest: z.number().int().min(1).optional().describe("Show top N largest messages in each bucket"),
     window_minutes: z.number().int().min(1).optional().describe("How far back to look in active minutes"),
-    debug: z.boolean().optional().default(false).describe("Dump every message with full ID and exact byte count in walk order for diffing against acm_scan. Note: sequential calls will differ by 1 message due to timing — the first call's result is added to context before the second call reads it."),
+    debug: z.boolean().optional().default(false).describe("Dump every message with full ID and exact character count in walk order for diffing against acm_scan. Note: sequential calls will differ by 1 message due to timing — the first call's result is added to context before the second call reads it."),
   },
 
   async execute(params, ctx) {
@@ -617,8 +621,8 @@ Helps you decide where to prune and whether pruning will actually save meaningfu
     const sorted = [...msgs].sort((a, b) => b.info.time.created - a.info.time.created)
 
     interface Bucket {
-      start: number; end: number; messages: number; bytes: number
-      largest?: Array<{ id: string; bytes: number; preview: string }>
+      start: number; end: number; messages: number; chars: number
+      largest?: Array<{ id: string; chars: number; preview: string }>
     }
 
     const buckets = new Map<number, Bucket>()
@@ -640,60 +644,60 @@ Helps you decide where to prune and whether pruning will actually save meaningfu
 
       const bucketIdx = Math.floor(cumulativeActive / intervalMs)
       if (!buckets.has(bucketIdx)) {
-        buckets.set(bucketIdx, { start: bucketIdx * (params.interval_minutes ?? 5), end: (bucketIdx + 1) * (params.interval_minutes ?? 5), messages: 0, bytes: 0, largest: [] })
+        buckets.set(bucketIdx, { start: bucketIdx * (params.interval_minutes ?? 5), end: (bucketIdx + 1) * (params.interval_minutes ?? 5), messages: 0, chars: 0, largest: [] })
       }
 
       const bucket = buckets.get(bucketIdx)!
       bucket.messages++
 
-      const { bytes, preview } = messageBytes(msg)
-      bucket.bytes += bytes
+      const { chars, preview } = messageChars(msg)
+      bucket.chars += chars
 
       if (params.show_largest) {
-        bucket.largest!.push({ id: msg.info.id, bytes, preview: preview.replace(/\n/g, " ") })
+        bucket.largest!.push({ id: msg.info.id, chars, preview: preview.replace(/\n/g, " ") })
       }
 
       if (params.window_minutes && cumulativeActive > params.window_minutes * 60 * 1000) break
     }
 
     const sortedBuckets = Array.from(buckets.entries()).sort((a, b) => a[0] - b[0])
-    const totalBytes = sortedBuckets.reduce((s, [, b]) => s + b.bytes, 0)
+    const totalChars = sortedBuckets.reduce((s, [, b]) => s + b.chars, 0)
 
     if (params.debug) {
       // Rebuild walk in forward order (oldest first) for comparison with acm_scan debug
       const debugMsgs = sorted.filter(m => !Store.getEntry(ctx.sessionID, m.info.id)?.compacted).reverse()
-      let output = `MAP DEBUG: ${debugMsgs.length} messages, ${totalBytes}B total\n\n`
-      output += `${"ID".padEnd(32)} ${"bytes".padStart(8)} role\n`
+      let output = `MAP DEBUG: ${debugMsgs.length} messages, ${totalChars} chars total\n\n`
+      output += `${"ID".padEnd(32)} ${"chars".padStart(8)} role\n`
       output += `${"─".repeat(32)} ${"─".repeat(8)} ${"─".repeat(10)}\n`
       for (const msg of debugMsgs) {
-        const { bytes } = messageBytes(msg)
+        const { chars } = messageChars(msg)
         const entry = Store.getEntry(ctx.sessionID, msg.info.id)
         const flags = [entry?.pinned ? "P" : "", entry?.compacted ? "C" : ""].filter(Boolean).join("")
-        output += `${msg.info.id.padEnd(32)} ${bytes.toString().padStart(8)} [${(msg.info as any).role ?? "unknown"}]${flags ? ` (${flags})` : ""}\n`
+        output += `${msg.info.id.padEnd(32)} ${chars.toString().padStart(8)} [${(msg.info as any).role ?? "unknown"}]${flags ? ` (${flags})` : ""}\n`
       }
-      output += `\nTotal: ${totalBytes}B (${Math.round(totalBytes / 1024)}KB)`
+      output += `\nTotal: ${totalChars} chars (~${Math.round(totalChars / 1000)}K)`
       return output
     }
 
     let output = `ACM Map (${params.interval_minutes ?? 5}min intervals, ${params.gap_threshold ?? 60}s gap threshold)\n\n`
-    output += `Active Time        Messages   ~KB       % Total\n`
+    output += `Active Time        Messages   ~Kchars   % Total\n`
     output += `────────────────────────────────────────────────\n`
 
     for (const [, bucket] of sortedBuckets) {
-      const kb = Math.round(bucket.bytes / 1024)
-      const pct = totalBytes > 0 ? Math.round((bucket.bytes / totalBytes) * 100) : 0
-      output += `${bucket.start}-${bucket.end} min`.padEnd(18) + ` ${bucket.messages.toString().padStart(8)}  ${kb.toString().padStart(6)}KB  ${pct.toString().padStart(6)}%\n`
+      const kchars = Math.round(bucket.chars / 1000)
+      const pct = totalChars > 0 ? Math.round((bucket.chars / totalChars) * 100) : 0
+      output += `${bucket.start}-${bucket.end} min`.padEnd(18) + ` ${bucket.messages.toString().padStart(8)}  ${kchars.toString().padStart(6)}K  ${pct.toString().padStart(6)}%\n`
 
       if (params.show_largest !== undefined && bucket.largest) {
-        bucket.largest.sort((a, b) => b.bytes - a.bytes).slice(0, params.show_largest).forEach((m) => {
-          output += `  └─ ${m.id.slice(-12)} (${Math.round(m.bytes / 1024)}KB) "${m.preview}"\n`
+        bucket.largest.sort((a, b) => b.chars - a.chars).slice(0, params.show_largest).forEach((m) => {
+          output += `  └─ ${m.id.slice(-12)} (~${Math.round(m.chars / 1000)}K chars) "${m.preview}"\n`
         })
       }
     }
 
     const totalMsgs = sortedBuckets.reduce((s, [, b]) => s + b.messages, 0)
     output += `────────────────────────────────────────────────\n`
-    output += `Active: ${totalMsgs} messages, ${Math.round(totalBytes / 1024)}KB\n`
+    output += `Active: ${totalMsgs} messages, ~${Math.round(totalChars / 1000)}K chars\n`
     return output
   },
 })
