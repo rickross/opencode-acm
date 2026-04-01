@@ -1,11 +1,17 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "opencode-acm",
-  "version": "0.5.0-beta.10",
+  "version": "0.5.0",
   "type": "module",
   "license": "MIT",
   "description": "Active Context Management plugin for OpenCode — pin, prune, scan, compact, and manage context with surgical precision",
-  "keywords": ["opencode", "plugin", "context", "memory", "acm"],
+  "keywords": [
+    "opencode",
+    "plugin",
+    "context",
+    "memory",
+    "acm"
+  ],
   "author": "Rick Ross",
   "repository": {
     "type": "git",
