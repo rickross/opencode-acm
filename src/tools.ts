@@ -531,8 +531,13 @@ Returns message IDs with previews for use with other ACM tools.`,
       if (results.length >= (params.limit ?? 10)) break
       const msgRole = (msg.info as any).role ?? ""
       if (params.role) {
-        if (params.role === "tool-result" && msgRole !== "assistant") continue
-        if (params.role !== "tool-result" && msgRole !== params.role) continue
+        if (params.role === "tool-result") {
+          // Only match messages that contain actual tool-result parts
+          const hasToolResult = msg.parts.some((p: any) => p.type === "tool-result")
+          if (!hasToolResult) continue
+        } else {
+          if (msgRole !== params.role) continue
+        }
       }
 
       const content = msg.parts.map(getPartText).join("\n")
