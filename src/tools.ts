@@ -20,6 +20,20 @@ function findMsg(msgs: MsgWithParts[], idOrPartial: string): MsgWithParts | unde
   return msgs.find((m) => m.info.id === idOrPartial || m.info.id.endsWith(idOrPartial) || m.info.id.includes(idOrPartial))
 }
 
+/**
+ * Wrap a tool execute function so its output streams directly to the TUI,
+ * same as the bash tool does via ctx.metadata({ metadata: { output } }).
+ */
+function streamingExecute<Args extends Record<string, any>>(
+  fn: (params: Args, ctx: any) => Promise<string>
+): (params: Args, ctx: any) => Promise<string> {
+  return async (params, ctx) => {
+    const result = await fn(params, ctx)
+    ctx.metadata({ metadata: { output: result } })
+    return result
+  }
+}
+
 function getPartText(part: Part): string {
   if (part.type === "text") return part.text ?? ""
   if (part.type === "tool") {

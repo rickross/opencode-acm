@@ -14,9 +14,25 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
+import { tool } from "@opencode-ai/plugin/tool"
 import { initClient } from "./client.js"
 import * as Store from "./store.js"
 import * as Tools from "./tools.js"
+
+/**
+ * Wrap a ToolDefinition so its output streams to the TUI via ctx.metadata,
+ * the same mechanism the bash tool uses.
+ */
+function streaming(t: ReturnType<typeof tool>): ReturnType<typeof tool> {
+  return {
+    ...t,
+    execute: async (args: any, ctx: any) => {
+      const result = await t.execute(args, ctx)
+      ctx.metadata({ metadata: { output: result } })
+      return result
+    },
+  }
+}
 
 const COMPACTED_STUB = "[Old tool result content cleared]"
 const CONTEXT_STATUS_LIMIT = process.env.OPENCODE_CONTEXT_STATUS_LIMIT
@@ -29,20 +45,20 @@ const plugin: Plugin = async (input) => {
     // Register all ACM tools
     // -----------------------------------------------------------------------
     tool: {
-      acm_pin: Tools.acm_pin,
-      acm_unpin: Tools.acm_unpin,
-      acm_compact: Tools.acm_compact,
-      acm_prune: Tools.acm_prune,
-      acm_scan: Tools.acm_scan,
-      acm_load: Tools.acm_load,
-      acm_unload: Tools.acm_unload,
-      acm_mark: Tools.acm_mark,
-      acm_search: Tools.acm_search,
-      acm_fetch: Tools.acm_fetch,
-      acm_map: Tools.acm_map,
-      acm_snapshot: Tools.acm_snapshot,
-      acm_diagnose: Tools.acm_diagnose,
-      acm_repair: Tools.acm_repair,
+      acm_pin: streaming(Tools.acm_pin),
+      acm_unpin: streaming(Tools.acm_unpin),
+      acm_compact: streaming(Tools.acm_compact),
+      acm_prune: streaming(Tools.acm_prune),
+      acm_scan: streaming(Tools.acm_scan),
+      acm_load: streaming(Tools.acm_load),
+      acm_unload: streaming(Tools.acm_unload),
+      acm_mark: streaming(Tools.acm_mark),
+      acm_search: streaming(Tools.acm_search),
+      acm_fetch: streaming(Tools.acm_fetch),
+      acm_map: streaming(Tools.acm_map),
+      acm_snapshot: streaming(Tools.acm_snapshot),
+      acm_diagnose: streaming(Tools.acm_diagnose),
+      acm_repair: streaming(Tools.acm_repair),
     },
 
     // -----------------------------------------------------------------------
