@@ -328,7 +328,7 @@ Pairs with acm_prune for surgical context reduction.`,
     for (const item of items) {
       const tags = [item.pinned ? "PINNED" : "", item.compacted ? "COMPACTED" : ""].filter(Boolean).join(",")
       output += `${item.id.slice(-12)}  ${Math.round(item.bytes / 1024)}KB  ${item.minutesAgo}m ago  [${item.role}]${tags ? ` (${tags})` : ""}\n`
-      output += `    "${item.preview}..."\n\n`
+      output += `    "${item.preview.replace(/`/g, "'").replace(/</g, "<").replace(/>/g, ">")}..."\n\n`
     }
     output += `Use acm_prune with message IDs above to compact.`
     return output
@@ -756,6 +756,19 @@ Detects incomplete tool calls, aborted executions, and other issues.`,
 
     for (const msg of msgs) {
       if (msg.info.id === ctx.messageID) continue
+      const info = msg.info as any
+      const role = info.role
+
+      // Check for aborted/incomplete assistant messages — these cause subsequent
+      // user messages to display as QUEUED in the TUI
+      if (role === "assistant") {
+        if (info.error && !info.finish) {
+          issues.push({ type: "aborted_message", severity: "error", messageID: msg.info.id, description: `Aborted assistant message with no finish: ${info.error?.name ?? "unknown error"}` })
+        } else if (msg.parts.length === 0 && !info.finish) {
+          issues.push({ type: "empty_message", severity: "error", messageID: msg.info.id, description: `Empty assistant message with no parts and no finish` })
+        }
+      }
+
       for (const part of msg.parts) {
         if (part.type !== "tool") continue
         const p = part as any
