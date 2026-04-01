@@ -15,7 +15,7 @@
 
 import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin/tool"
-import { initClient } from "./client.js"
+import { initClient, getMessages } from "./client.js"
 import * as Store from "./store.js"
 import * as Tools from "./tools.js"
 
@@ -62,8 +62,10 @@ const plugin: Plugin = async (input) => {
     },
 
     // -----------------------------------------------------------------------
-    // Context filter: replace compacted message content with stubs
-    // Pinned messages always pass through regardless of compaction status.
+    // Context filter: replace compacted message content with stubs.
+    // Pinned messages that have been pushed before the compaction boundary
+    // are re-injected at the start of the active window so they remain
+    // visible to the model.
     // -----------------------------------------------------------------------
     "experimental.chat.messages.transform": async (_input, output) => {
       const messages = output.messages
@@ -74,7 +76,6 @@ const plugin: Plugin = async (input) => {
       if (!sessionID) return
 
       const compacted = Store.getCompactedMessages(sessionID)
-      if (compacted.size === 0) return
 
       // Replace compacted message content with stubs
       for (const msg of messages) {
@@ -102,6 +103,36 @@ const plugin: Plugin = async (input) => {
         ;(msg as any).parts = newParts
       }
 
+      // Re-inject pinned messages that are before the compaction boundary
+      const pinnedIds = Store.getPinnedMessages(sessionID)
+      if (pinnedIds.length === 0) return
+
+      const presentIds = new Set(messages.map((m: any) => (m.info as any)?.id).filter(Boolean))
+      const missingPinnedIds = pinnedIds.filter(id => !presentIds.has(id))
+      if (missingPinnedIds.length === 0) return
+
+      // Fetch full session history to get the missing pinned messages
+      const allMessages = await getMessages(sessionID)
+      const allById = new Map(allMessages.map(m => [(m.info as any)?.id, m]))
+
+      const toInject = missingPinnedIds
+        .map(id => allById.get(id))
+        .filter((m): m is NonNullable<typeof m> => m !== undefined)
+
+      if (toInject.length === 0) return
+
+      // Wrap each pinned message with a synthetic marker so agents can
+      // identify them as re-injected context
+      const wrapped = toInject.map(msg => ({
+        ...msg,
+        parts: [
+          { type: "text", text: `[Pinned context re-injected by ACM]`, synthetic: true } as any,
+          ...msg.parts,
+        ],
+      }))
+
+      // Prepend to the active window
+      output.messages.unshift(...wrapped)
     },
 
     // -----------------------------------------------------------------------
