@@ -195,10 +195,7 @@ This maintains a focused working memory while keeping recent context intact.`,
     const markerTime = cutoff - 1
     const markerID = `msg_acm_compact_${ctx.sessionID.slice(-12)}_${markerTime}`
     const summaryID = `msg_acm_summary_${ctx.sessionID.slice(-12)}_${markerTime}`
-    const client = getClient()
 
-    // Use the SDK to create the messages so they go through proper channels
-    // Fall back to direct Store insertion if SDK doesn't support it
     try {
       await Store.insertCompactionMarker(ctx.sessionID, markerID, summaryID, markerTime)
     } catch (e: any) {
