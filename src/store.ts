@@ -171,6 +171,105 @@ export function deleteSession(sessionId: string): void {
 }
 
 /**
+ * Fix stuck tool parts in opencode.db for a given message.
+ *
+ * For each part with state.status === "running" or "pending":
+ *   1. Set state.status to "error"
+ *   2. Insert a tool-result part (isError: true) if none exists for that callID
+ *   3. Ensure a step-finish part exists for the message
+ *
+ * Also sets finish: "error" on the message itself if finish is null.
+ */
+export function fixStuckParts(sessionId: string, messageId: string): { partsFixed: number; toolResultsAdded: number; stepFinishAdded: boolean; messageFinishFixed: boolean } {
+  const ocDbPath = path.join(DATA_DIR, "opencode.db")
+  const ocDb = new Database(ocDbPath)
+  ocDb.run("PRAGMA journal_mode=WAL")
+
+  let partsFixed = 0
+  let toolResultsAdded = 0
+  let stepFinishAdded = false
+  let messageFinishFixed = false
+
+  try {
+    ocDb.run("BEGIN")
+
+    // Get all parts for this message
+    const parts = ocDb.query<{ id: string; data: string }, [string]>(
+      "SELECT id, data FROM part WHERE message_id = ? ORDER BY rowid"
+    ).all(messageId)
+
+    // Track existing callIDs that have tool-result parts
+    const existingToolResults = new Set<string>()
+    let hasStepFinish = false
+
+    for (const p of parts) {
+      const d = JSON.parse(p.data)
+      if (d.type === "tool-result") existingToolResults.add(d.callID)
+      if (d.type === "step-finish") hasStepFinish = true
+    }
+
+    // Fix stuck tool parts and inject missing tool-results
+    for (const p of parts) {
+      const d = JSON.parse(p.data)
+      if (d.type !== "tool") continue
+      const status = d.state?.status
+      if (status !== "running" && status !== "pending") continue
+
+      // Update the part status to error
+      d.state.status = "error"
+      if (!d.state.time) d.state.time = {}
+      d.state.time.end = Date.now()
+      ocDb.run("UPDATE part SET data = ? WHERE id = ?", [JSON.stringify(d), p.id])
+      partsFixed++
+
+      // Inject tool-result if missing
+      const callID = d.callID
+      if (callID && !existingToolResults.has(callID)) {
+        const now = Date.now()
+        const trId = `prt_acm_tr_${messageId.slice(-8)}_${callID.slice(-8)}`
+        ocDb.run(
+          "INSERT OR IGNORE INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?,?,?,?,?,?)",
+          [trId, messageId, sessionId, now, now, JSON.stringify({ type: "tool-result", callID, content: "interrupted", isError: true })]
+        )
+        existingToolResults.add(callID)
+        toolResultsAdded++
+      }
+    }
+
+    // Inject step-finish if missing
+    if (!hasStepFinish && partsFixed > 0) {
+      const now = Date.now()
+      const sfId = `prt_acm_sf_${messageId.slice(-12)}`
+      ocDb.run(
+        "INSERT OR IGNORE INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?,?,?,?,?,?)",
+        [sfId, messageId, sessionId, now, now, JSON.stringify({ type: "step-finish", finishReason: "error", usage: { promptTokens: 0, completionTokens: 0 } })]
+      )
+      stepFinishAdded = true
+    }
+
+    // Fix message-level finish if null
+    const msgRow = ocDb.query<{ data: string }, [string]>("SELECT data FROM message WHERE id = ?").get(messageId)
+    if (msgRow) {
+      const msgData = JSON.parse(msgRow.data)
+      if (!msgData.finish) {
+        msgData.finish = "error"
+        ocDb.run("UPDATE message SET data = ? WHERE id = ?", [JSON.stringify(msgData), messageId])
+        messageFinishFixed = true
+      }
+    }
+
+    ocDb.run("COMMIT")
+  } catch (e) {
+    ocDb.run("ROLLBACK")
+    throw e
+  } finally {
+    ocDb.close()
+  }
+
+  return { partsFixed, toolResultsAdded, stepFinishAdded, messageFinishFixed }
+}
+
+/**
  * Insert an OpenCode-native compaction marker pair into opencode.db.
  *
  * This is the same format OpenCode uses natively, so filterCompacted will

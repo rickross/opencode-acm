@@ -834,17 +834,44 @@ Run acm_diagnose first to identify issues, then provide message IDs to repair.`,
 
     if (toDelete.length === 0) return `None of the provided IDs were found in session ${sessionID}.`
 
-    const plan = toDelete.map((m) => `  - ${m.info.id} (${(m.info as any).role}, ${m.parts.length} parts)`).join("\n")
+    // Classify each message: if it has stuck tool parts, fix surgically;
+    // otherwise compact the whole message
+    const stuckToolMsgs = toDelete.filter((m) =>
+      m.parts.some((p: any) => p.type === "tool" && (p.state?.status === "running" || p.state?.status === "pending"))
+    )
+    const compactMsgs = toDelete.filter((m) => !stuckToolMsgs.includes(m))
+
+    const plan = toDelete.map((m) => {
+      const hasStuck = stuckToolMsgs.includes(m)
+      return `  - ${m.info.id} (${(m.info as any).role}, ${m.parts.length} parts)${hasStuck ? " [stuck tool — surgical fix]" : " [compact]"}`
+    }).join("\n")
 
     if (params.dry_run) {
-      return `Dry run — would compact ${toDelete.length} message(s):\n\n${plan}\n\nRun with dry_run: false to apply.`
+      return `Dry run — would repair ${toDelete.length} message(s):\n\n${plan}\n\nRun with dry_run: false to apply.`
     }
 
-    for (const msg of toDelete) {
+    const results: string[] = []
+
+    // Surgical fix for stuck tool parts
+    for (const msg of stuckToolMsgs) {
+      try {
+        const r = Store.fixStuckParts(sessionID, msg.info.id)
+        results.push(`  - ${msg.info.id} (${(msg.info as any).role}, ${msg.parts.length} parts) — fixed ${r.partsFixed} stuck part(s), +${r.toolResultsAdded} tool-result(s)${r.stepFinishAdded ? ", +step-finish" : ""}${r.messageFinishFixed ? ", finish fixed" : ""}`)
+      } catch (e: any) {
+        // Fall back to compaction if surgical fix fails
+        Store.compactMessage(sessionID, msg.info.id)
+        Store.unpinMessage(sessionID, msg.info.id)
+        results.push(`  - ${msg.info.id} (${(msg.info as any).role}, ${msg.parts.length} parts) — surgical fix failed (${e.message}), compacted`)
+      }
+    }
+
+    // Compact the rest
+    for (const msg of compactMsgs) {
       Store.compactMessage(sessionID, msg.info.id)
       Store.unpinMessage(sessionID, msg.info.id)
+      results.push(`  - ${msg.info.id} (${(msg.info as any).role}, ${msg.parts.length} parts)`)
     }
 
-    return `Compacted ${toDelete.length} problematic message(s):\n\n${plan}`
+    return `Repaired ${toDelete.length} message(s):\n\n${results.join("\n")}`
   },
 })
