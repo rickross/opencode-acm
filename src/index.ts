@@ -51,14 +51,14 @@ const plugin: Plugin = async (input) => {
     // -----------------------------------------------------------------------
     "experimental.chat.messages.transform": async (_input, output) => {
       const messages = output.messages
-      if (!messages || messages.length === 0) return
+      if (!messages || messages.length === 0) return { messages: [] }
 
       // Determine session ID from first message
       const sessionID: string | undefined = (messages[0]?.info as any)?.sessionID
-      if (!sessionID) return
+      if (!sessionID) return { messages }
 
       const compacted = Store.getCompactedMessages(sessionID)
-      if (compacted.size === 0) return
+      if (compacted.size === 0) return { messages }
 
       // Replace compacted message content with stubs
       for (const msg of messages) {
@@ -75,6 +75,8 @@ const plugin: Plugin = async (input) => {
         }
         ;(msg as any).parts = newParts
       }
+
+      return { messages }
     },
 
     // -----------------------------------------------------------------------
