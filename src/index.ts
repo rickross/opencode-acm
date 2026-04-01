@@ -136,11 +136,33 @@ const plugin: Plugin = async (input) => {
     },
 
     // -----------------------------------------------------------------------
-    // Context status whisper: inject token usage into last user message
+    // System reminder: inject wall-clock time and context status on every turn
+    // Restores the openfork system-reminder behavior for OpenCode 1.3+
     // -----------------------------------------------------------------------
-    "experimental.chat.system.transform": async (_sysInput, _output) => {
-      // Context status injection can be added here in a future PR
-      // For now this hook is a no-op placeholder
+    "experimental.chat.system.transform": async (sysInput, output) => {
+      const now = new Date()
+      const timeStr = now.toLocaleString("en-US", {
+        weekday: "short", year: "numeric", month: "short", day: "numeric",
+        hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+      })
+
+      // Context limit — from env var or model context window
+      const limitFromEnv = CONTEXT_STATUS_LIMIT ? parseInt(CONTEXT_STATUS_LIMIT, 10) : null
+      const modelLimit = (sysInput.model as any)?.contextLength ?? null
+      const limit = limitFromEnv ?? modelLimit
+
+      // Skip if OpenCode has already injected a system-reminder with time info
+      const alreadyHasReminder = output.system.some(s => s.includes("<system-reminder>") && s.includes("<time"))
+      if (alreadyHasReminder) return
+
+      // Build reminder block
+      let reminder = `<system-reminder>\n  <time>${timeStr}</time>`
+      if (limit) {
+        reminder += `\n  <context-limit>${limit.toLocaleString()} tokens</context-limit>`
+      }
+      reminder += `\n</system-reminder>`
+
+      output.system.push(reminder)
     },
 
     // -----------------------------------------------------------------------
