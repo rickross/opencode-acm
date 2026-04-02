@@ -42,8 +42,15 @@ const CONTEXT_STATUS_LIMIT = process.env.OPENCODE_CONTEXT_STATUS_LIMIT
 // Same formula as OpenCode's session-context-metrics.ts status bar indicator.
 const tokenCache = new Map<string, { total: number; limit: number | null }>()
 
-const plugin: Plugin = async (input) => {
+const plugin: Plugin = async (input, options) => {
   initClient(input.client)
+
+  // systemReminder: inject context-status into message stream each turn
+  // Default: true. Disable via plugin options or env var.
+  const systemReminderEnv = process.env.OPENCODE_ACM_SYSTEM_REMINDER
+  const systemReminderEnabled = systemReminderEnv === "0" || systemReminderEnv === "false"
+    ? false
+    : (options?.systemReminder !== false)
 
   return {
     // -----------------------------------------------------------------------
@@ -144,6 +151,7 @@ const plugin: Plugin = async (input) => {
       // Mirrors openfork's approach — injecting into the message stream so the
       // agent sees it naturally in context each turn (not buried in system prompt).
       // -----------------------------------------------------------------------
+      if (!systemReminderEnabled) return
 
       // 1. Find last assistant message with tokens (same as status bar formula)
       let total = 0
