@@ -121,9 +121,9 @@ When called with no parameters, lists all currently pinned messages.`,
 })
 
 // ---------------------------------------------------------------------------
-// acm_status
+// acm_info
 // ---------------------------------------------------------------------------
-export const acm_status = tool({
+export const acm_info = tool({
   description: `Show ACM plugin status: version, session info, context metrics (tokens/percent/limit), compaction state, and system-reminder status.`,
 
   args: {

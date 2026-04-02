@@ -38,7 +38,7 @@ function streaming(t: ReturnType<typeof tool>): ReturnType<typeof tool> {
 const COMPACTED_STUB = "[Old tool result content cleared]"
 const CONTEXT_STATUS_LIMIT = process.env.OPENCODE_CONTEXT_STATUS_LIMIT
 
-// tokenCache is now in store.ts so acm_status can also read it
+// tokenCache is now in store.ts so acm_info can also read it
 
 const plugin: Plugin = async (input, options) => {
   initClient(input.client)
@@ -56,8 +56,8 @@ const plugin: Plugin = async (input, options) => {
     // -----------------------------------------------------------------------
     tool: {
       acm_pin: streaming(Tools.acm_pin),
-      acm_status: streaming(Tools.acm_status),
       acm_unpin: streaming(Tools.acm_unpin),
+      acm_info: streaming(Tools.acm_info),
       acm_compact: streaming(Tools.acm_compact),
       acm_prune: streaming(Tools.acm_prune),
       acm_scan: streaming(Tools.acm_scan),
