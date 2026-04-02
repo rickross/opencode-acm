@@ -121,6 +121,100 @@ When called with no parameters, lists all currently pinned messages.`,
 })
 
 // ---------------------------------------------------------------------------
+// acm_status
+// ---------------------------------------------------------------------------
+export const acm_status = tool({
+  description: `Show ACM plugin status: version, session info, context metrics (tokens/percent/limit), compaction state, and system-reminder status.`,
+
+  args: {
+    _unused: z.string().optional().describe("Unused — call with no arguments"),
+  },
+
+  async execute(_params, ctx) {
+    const VERSION = "0.5.19"
+    const sessionID = ctx.sessionID
+    const msgs = await getMessages(sessionID)
+    const activeMsgs = await getActiveMessages(sessionID)
+    const compacted = Store.getCompactedMessages(sessionID)
+    const pinned = Store.getPinnedMessages(sessionID)
+
+    // Find last assistant message with tokens — same formula as system-reminder
+    let total = 0
+    let modelID = "unknown"
+    let providerID = "unknown"
+    let lastMsgTokens: any = null
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const msg = msgs[i]
+      if ((msg.info as any)?.role !== "assistant") continue
+      const t = (msg.info as any)?.tokens
+      if (!t) continue
+      const sum = (t.total ?? 0) || (t.input + t.output + t.reasoning + (t.cache?.read ?? 0) + (t.cache?.write ?? 0))
+      if (sum <= 0) continue
+      total = sum
+      modelID = (msg.info as any)?.modelID ?? "unknown"
+      providerID = (msg.info as any)?.providerID ?? "unknown"
+      lastMsgTokens = t
+      break
+    }
+
+    const now = new Date()
+    const timeStr = now.toLocaleString("en-US", {
+      weekday: "short", year: "numeric", month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+    })
+
+    // Get context limit from token cache (populated by system.transform hook)
+    const limitFromEnv = process.env.OPENCODE_CONTEXT_STATUS_LIMIT ? parseInt(process.env.OPENCODE_CONTEXT_STATUS_LIMIT, 10) : null
+    const limitFromCache = Store.tokenCache.get(sessionID)?.limit ?? null
+    const contextLimit = limitFromEnv ?? limitFromCache
+
+    let out = `ACM v${VERSION}\n`
+    out += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`
+    out += `Time:     ${timeStr}\n`
+    out += `Session:  ${sessionID.slice(-16)}\n`
+    out += `\n`
+    out += `── Context ──────────────────────\n`
+    out += `Model:    ${providerID}/${modelID}\n`
+    if (total > 0) {
+      const pct = contextLimit ? `${Math.round((total / contextLimit) * 100)}%` : "N%"
+      const limitStr = contextLimit ? contextLimit.toLocaleString() : "N"
+      out += `Tokens:   ${total.toLocaleString()} / ${limitStr} (${pct})\n`
+      if (lastMsgTokens) {
+        out += `  input:  ${(lastMsgTokens.input ?? 0).toLocaleString()}\n`
+        out += `  output: ${(lastMsgTokens.output ?? 0).toLocaleString()}\n`
+        if ((lastMsgTokens.cache?.read ?? 0) > 0 || (lastMsgTokens.cache?.write ?? 0) > 0) {
+          out += `  cache:  ${(lastMsgTokens.cache?.read ?? 0).toLocaleString()} read / ${(lastMsgTokens.cache?.write ?? 0).toLocaleString()} write\n`
+        }
+        if ((lastMsgTokens.reasoning ?? 0) > 0) {
+          out += `  reasoning: ${(lastMsgTokens.reasoning ?? 0).toLocaleString()}\n`
+        }
+        out += `  t.total: ${lastMsgTokens.total ?? "undefined"}\n`
+      }
+    } else {
+      out += `Tokens:   unavailable (no completed assistant message with tokens)\n`
+    }
+    out += `\n`
+    out += `── Messages ─────────────────────\n`
+    out += `Total:    ${msgs.length}\n`
+    out += `Active:   ${activeMsgs.length}\n`
+    out += `Compacted: ${compacted.size}\n`
+    out += `Pinned:   ${pinned.length}\n`
+    if (pinned.length > 0) {
+      for (const id of pinned) {
+        const m = msgs.find(m => (m.info as any)?.id === id)
+        const role = m ? (m.info as any)?.role : "?"
+        out += `  • ${id.slice(-12)} (${role})\n`
+      }
+    }
+    out += `\n`
+    out += `── System Reminder ──────────────\n`
+    out += `Enabled:  ${process.env.OPENCODE_ACM_SYSTEM_REMINDER === "0" ? "no (env)" : "yes"}\n`
+
+    return out
+  },
+})
+
+// ---------------------------------------------------------------------------
 // acm_unpin
 // ---------------------------------------------------------------------------
 export const acm_unpin = tool({
@@ -888,96 +982,4 @@ Run acm_diagnose first to identify issues, then provide message IDs to repair.`,
   },
 })
 
-// ---------------------------------------------------------------------------
-// acm_status
-// ---------------------------------------------------------------------------
-export const acm_status = tool({
-  description: `Show ACM plugin status: version, session info, context metrics (tokens/percent/limit), compaction state, and system-reminder status.`,
 
-  args: {
-    _unused: z.string().optional().describe("Unused — call with no arguments"),
-  },
-
-  async execute(_params, ctx) {
-    const VERSION = "0.5.16"
-    const sessionID = ctx.sessionID
-    const msgs = await getMessages(sessionID)
-    const activeMsgs = await getActiveMessages(sessionID)
-    const compacted = Store.getCompactedMessages(sessionID)
-    const pinned = Store.getPinnedMessages(sessionID)
-
-    // Find last assistant message with tokens — same formula as system-reminder
-    let total = 0
-    let modelID = "unknown"
-    let providerID = "unknown"
-    let lastMsgTokens: any = null
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const msg = msgs[i]
-      if ((msg.info as any)?.role !== "assistant") continue
-      const t = (msg.info as any)?.tokens
-      if (!t) continue
-      const sum = (t.total ?? 0) || (t.input + t.output + t.reasoning + (t.cache?.read ?? 0) + (t.cache?.write ?? 0))
-      if (sum <= 0) continue
-      total = sum
-      modelID = (msg.info as any)?.modelID ?? "unknown"
-      providerID = (msg.info as any)?.providerID ?? "unknown"
-      lastMsgTokens = t
-      break
-    }
-
-    const now = new Date()
-    const timeStr = now.toLocaleString("en-US", {
-      weekday: "short", year: "numeric", month: "short", day: "numeric",
-      hour: "2-digit", minute: "2-digit", timeZoneName: "short",
-    })
-
-    // Get context limit from token cache (populated by system.transform hook)
-    const limitFromEnv = process.env.OPENCODE_CONTEXT_STATUS_LIMIT ? parseInt(process.env.OPENCODE_CONTEXT_STATUS_LIMIT, 10) : null
-    const limitFromCache = Store.tokenCache.get(sessionID)?.limit ?? null
-    const contextLimit = limitFromEnv ?? limitFromCache
-
-    let out = `ACM v${VERSION}\n`
-    out += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`
-    out += `Time:     ${timeStr}\n`
-    out += `Session:  ${sessionID.slice(-16)}\n`
-    out += `\n`
-    out += `── Context ──────────────────────\n`
-    out += `Model:    ${providerID}/${modelID}\n`
-    if (total > 0) {
-      const pct = contextLimit ? `${Math.round((total / contextLimit) * 100)}%` : "N%"
-      const limitStr = contextLimit ? contextLimit.toLocaleString() : "N"
-      out += `Tokens:   ${total.toLocaleString()} / ${limitStr} (${pct})\n`
-      if (lastMsgTokens) {
-        out += `  input:  ${(lastMsgTokens.input ?? 0).toLocaleString()}\n`
-        out += `  output: ${(lastMsgTokens.output ?? 0).toLocaleString()}\n`
-        if ((lastMsgTokens.cache?.read ?? 0) > 0 || (lastMsgTokens.cache?.write ?? 0) > 0) {
-          out += `  cache:  ${(lastMsgTokens.cache?.read ?? 0).toLocaleString()} read / ${(lastMsgTokens.cache?.write ?? 0).toLocaleString()} write\n`
-        }
-        if ((lastMsgTokens.reasoning ?? 0) > 0) {
-          out += `  reasoning: ${(lastMsgTokens.reasoning ?? 0).toLocaleString()}\n`
-        }
-        out += `  t.total: ${lastMsgTokens.total ?? "undefined"}\n`
-      }
-    } else {
-      out += `Tokens:   unavailable (no completed assistant message with tokens)\n`
-    }
-    out += `\n`
-    out += `── Messages ─────────────────────\n`
-    out += `Total:    ${msgs.length}\n`
-    out += `Active:   ${activeMsgs.length}\n`
-    out += `Compacted: ${compacted.size}\n`
-    out += `Pinned:   ${pinned.length}\n`
-    if (pinned.length > 0) {
-      for (const id of pinned) {
-        const m = msgs.find(m => (m.info as any)?.id === id)
-        const role = m ? (m.info as any)?.role : "?"
-        out += `  • ${id.slice(-12)} (${role})\n`
-      }
-    }
-    out += `\n`
-    out += `── System Reminder ──────────────\n`
-    out += `Enabled:  ${process.env.OPENCODE_ACM_SYSTEM_REMINDER === "0" ? "no (env)" : "yes"}\n`
-
-    return out
-  },
-})
