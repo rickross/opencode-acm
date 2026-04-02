@@ -894,7 +894,9 @@ Run acm_diagnose first to identify issues, then provide message IDs to repair.`,
 export const acm_status = tool({
   description: `Show ACM plugin status: version, session info, context metrics (tokens/percent/limit), compaction state, and system-reminder status.`,
 
-  args: {},
+  args: {
+    _unused: z.string().optional().describe("Unused — call with no arguments"),
+  },
 
   async execute(_params, ctx) {
     const VERSION = "0.5.16"
