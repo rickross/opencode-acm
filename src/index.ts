@@ -166,8 +166,15 @@ const plugin: Plugin = async (input, options) => {
 
       // Skip injection if last user message is from an external transport (e.g. Mattermost)
       // — detected by the [Metadata: sender=...] prefix injected by the Mattermost plugin
-      const lastUserText = (lastUserMsg as any).parts?.find((p: any) => p.type === "text" && !p.synthetic)?.text ?? ""
-      if (lastUserText.startsWith("[Metadata:")) return
+      const lastUserParts = (lastUserMsg as any).parts ?? []
+      const lastUserText = lastUserParts.find((p: any) => p.type === "text" && !p.synthetic)?.text ?? ""
+      process.stderr.write(`[ACM debug] lastUserMsg id=${((lastUserMsg.info) as any)?.id?.slice(-12)} role=${((lastUserMsg.info) as any)?.role} parts=${lastUserParts.length}\n`)
+      for (const p of lastUserParts) {
+        process.stderr.write(`[ACM debug]   part type=${p.type} synthetic=${!!(p as any).synthetic} text=${JSON.stringify((p.text ?? "").slice(0, 120))}\n`)
+      }
+      const heuristicMatched = lastUserText.startsWith("[Metadata:")
+      process.stderr.write(`[ACM debug] heuristicMatched=${heuristicMatched} → ${heuristicMatched ? "SKIP" : "INJECT"}\n`)
+      if (heuristicMatched) return
 
       // 3. Remove previously injected system-reminder synthetic parts (dedup)
       ;(lastUserMsg as any).parts = (lastUserMsg as any).parts.filter(
