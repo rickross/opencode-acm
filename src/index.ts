@@ -153,33 +153,18 @@ const plugin: Plugin = async (input, options) => {
       // -----------------------------------------------------------------------
       if (!systemReminderEnabled) return
 
-      // 1. Find last assistant message with tokens using full session message list
-      // (same source as TUI status bar — unfiltered, not compacted-stripped)
+      // 1. Find last completed assistant message tokens
+      // Use t.total — matches TUI status bar exactly
       let total = 0
-      try {
-        const allMsgs = await getMessages(sessionID)
-        for (let i = allMsgs.length - 1; i >= 0; i--) {
-          const msg = allMsgs[i]
-          if ((msg.info as any)?.role !== "assistant") continue
-          const t = (msg.info as any)?.tokens
-          if (!t) continue
-          const sum = (t.input ?? 0) + (t.output ?? 0) + (t.reasoning ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0)
-          if (sum <= 0) continue
-          total = sum
-          break
-        }
-      } catch {
-        // fall back to filtered messages list
-        for (let i = messages.length - 1; i >= 0; i--) {
-          const msg = messages[i]
-          if ((msg.info as any)?.role !== "assistant") continue
-          const t = (msg.info as any)?.tokens
-          if (!t) continue
-          const sum = (t.input ?? 0) + (t.output ?? 0) + (t.reasoning ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0)
-          if (sum <= 0) continue
-          total = sum
-          break
-        }
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i]
+        if ((msg.info as any)?.role !== "assistant") continue
+        const t = (msg.info as any)?.tokens
+        if (!t) continue
+        const sum = (t.total ?? 0) || (t.input + t.output + t.reasoning + (t.cache?.read ?? 0) + (t.cache?.write ?? 0))
+        if (sum <= 0) continue
+        total = sum
+        break
       }
 
       // 2. Find last user message to inject into
@@ -224,12 +209,8 @@ const plugin: Plugin = async (input, options) => {
       output.system.length = 0
       output.system.push(...filtered)
 
-      // Store model limit in cache for use in messages.transform
-      // Use ctx.client to get the model with user overrides applied (same as TUI)
+      // Also store model limit in cache for use in messages.transform
       const sessionID: string | undefined = (_sysInput as any).sessionID
-      const modelId: string | undefined = (_sysInput.model as any)?.id
-      const providerId: string | undefined = (_sysInput.model as any)?.providerID
-      // model.limit.context is already override-applied (merged from opencode.json in provider.ts)
       const modelLimit = (_sysInput.model as any)?.limit?.context ?? null
       if (sessionID && modelLimit) {
         const existing = tokenCache.get(sessionID)
