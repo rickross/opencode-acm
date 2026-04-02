@@ -153,17 +153,33 @@ const plugin: Plugin = async (input, options) => {
       // -----------------------------------------------------------------------
       if (!systemReminderEnabled) return
 
-      // 1. Find last assistant message with tokens (same as status bar formula)
+      // 1. Find last assistant message with tokens using full session message list
+      // (same source as TUI status bar — unfiltered, not compacted-stripped)
       let total = 0
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i]
-        if ((msg.info as any)?.role !== "assistant") continue
-        const t = (msg.info as any)?.tokens
-        if (!t) continue
-        const sum = (t.input ?? 0) + (t.output ?? 0) + (t.reasoning ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0)
-        if (sum <= 0) continue
-        total = sum
-        break
+      try {
+        const allMsgs = await getMessages(sessionID)
+        for (let i = allMsgs.length - 1; i >= 0; i--) {
+          const msg = allMsgs[i]
+          if ((msg.info as any)?.role !== "assistant") continue
+          const t = (msg.info as any)?.tokens
+          if (!t) continue
+          const sum = (t.input ?? 0) + (t.output ?? 0) + (t.reasoning ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0)
+          if (sum <= 0) continue
+          total = sum
+          break
+        }
+      } catch {
+        // fall back to filtered messages list
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const msg = messages[i]
+          if ((msg.info as any)?.role !== "assistant") continue
+          const t = (msg.info as any)?.tokens
+          if (!t) continue
+          const sum = (t.input ?? 0) + (t.output ?? 0) + (t.reasoning ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0)
+          if (sum <= 0) continue
+          total = sum
+          break
+        }
       }
 
       // 2. Find last user message to inject into
@@ -213,22 +229,11 @@ const plugin: Plugin = async (input, options) => {
       const sessionID: string | undefined = (_sysInput as any).sessionID
       const modelId: string | undefined = (_sysInput.model as any)?.id
       const providerId: string | undefined = (_sysInput.model as any)?.providerID
-      if (sessionID && modelId && providerId) {
-        try {
-          const providersResp = await input.client.config.providers()
-          const allProviders: any[] = (providersResp as any)?.data?.providers ?? (providersResp as any)?.providers ?? []
-          const provider = allProviders.find((p: any) => p.id === providerId)
-          const modelOverride = provider?.models?.[modelId]
-          const overrideLimit = modelOverride?.limit?.context ?? null
-          const fallbackLimit = (_sysInput.model as any)?.limit?.context ?? null
-          const resolvedLimit = overrideLimit ?? fallbackLimit
-          if (resolvedLimit) {
-            const existing = tokenCache.get(sessionID)
-            tokenCache.set(sessionID, { total: existing?.total ?? 0, limit: resolvedLimit })
-          }
-        } catch {
-          // fall through — use whatever is cached already
-        }
+      // model.limit.context is already override-applied (merged from opencode.json in provider.ts)
+      const modelLimit = (_sysInput.model as any)?.limit?.context ?? null
+      if (sessionID && modelLimit) {
+        const existing = tokenCache.get(sessionID)
+        tokenCache.set(sessionID, { total: existing?.total ?? 0, limit: modelLimit })
       }
     },
 
