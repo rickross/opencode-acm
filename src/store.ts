@@ -12,8 +12,12 @@ import os from "os"
 const DATA_DIR = process.env.OPENCODE_DATA_DIR || path.join(os.homedir(), ".local", "share", "opencode")
 
 // In-memory token cache — populated by messages.transform/system.transform hooks
-// Accessible by acm_status tool to show live context metrics
+// Accessible by acm_info tool to show live context metrics
 export const tokenCache = new Map<string, { total: number; limit: number | null }>()
+
+// Effective system-reminder state — set at plugin init, read by acm_info
+export let systemReminderEnabled = true
+export function setSystemReminderEnabled(val: boolean) { systemReminderEnabled = val }
 
 let _db: Database | null = null
 

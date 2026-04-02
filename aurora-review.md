@@ -1,52 +1,67 @@
 # Aurora Review
 
+## Current State
+
+The repo is in better shape than it was in the earlier review.
+
+Notable improvements:
+
+- pinned-message survival is now implemented by re-injecting pinned pre-boundary messages in `src/index.ts`
+- `acm_search` with `role: "tool-result"` now checks for actual `tool-result` parts
+- the README is clearer and now documents the ACM system reminder and `acm_info`
+- `bun run typecheck` passes
+- `bun run build` passes
+
 ## Findings
 
-1. High: the core "pinned messages survive compaction" contract does not appear to be implemented.
+1. Medium: `acm_info` can misreport whether the system reminder is enabled.
 
-The README and tool docs promise that pinned messages stay in context across compaction boundaries (`README.md:17-24`, `README.md:40-45`), but `acm_compact` inserts a native boundary that pushes older messages out (`src/tools.ts:205-219`), `getActiveMessages` then slices everything before that boundary away (`src/client.ts:45-77`), and the transform hook only stubs messages already present in `output.messages` rather than re-injecting older pinned ones (`src/index.ts:68-105`). I do not see any path that makes pre-boundary pinned messages visible again to the model.
+The plugin correctly resolves reminder enablement from both the environment variable and plugin options in `src/index.ts:48-51`, but `acm_info` reports status from the environment variable alone in `src/tools.ts:214-215`. If the reminder is disabled through `opencode.json` with `systemReminder: false`, `acm_info` will still report `Enabled: yes`.
 
-2. Medium: `acm_search` and `acm_fetch` claim to operate on active context, but both read the full session history with `getMessages()` instead of the post-boundary active window.
+2. Medium: `acm_repair` advertises backups but does not create them.
 
-See `src/tools.ts:510-546` and `src/tools.ts:563-580`. After a compaction, these tools can return messages the model no longer sees, which is likely to confuse both the user and the agent.
+`acm_repair` exposes a `create_backup` argument in `src/tools.ts:929-930`, but no backup behavior is implemented in the function body. For a repair tool, that is a meaningful contract mismatch.
 
-3. Medium: MKP pin finalization is race-prone.
+3. Low: `acm_fetch` documentation still says it fetches from active context, but the implementation searches full session history.
 
-`acm_load` stores pending state in a single `Map<sessionID, ...>` entry (`src/tools.ts:399-409`), and the event hook consumes that entry on any `session.updated` event (`src/index.ts:118-129`). Back-to-back or parallel `acm_load` calls in the same session can overwrite one another, and the event hook has no stronger correlation than session ID.
+The description at `src/tools.ts:662-664` says active context, but the implementation uses `getMessages()` in `src/tools.ts:672`. Given the newer intentional "wayback" behavior, this looks like a docs mismatch rather than a logic bug.
 
-4. Medium: `acm_search` with `role: "tool-result"` does not actually restrict results to tool results.
+4. Low: `acm_diagnose.verbose` is declared but unused.
 
-It only filters to assistant messages (`src/tools.ts:531-535`) and then searches the concatenated message text (`src/tools.ts:537-542`), so plain assistant prose can match too. That makes the role filter semantically wrong.
+The argument exists in `src/tools.ts:867-868`, but the implementation does not branch on it.
 
-5. Low: the size accounting is labeled as bytes/KB and even "token distribution," but the implementation uses `text.length` on strings.
+5. Low: the README's hook count is out of date.
 
-See `src/tools.ts:46-55` and `src/tools.ts:588-691`. That is neither byte count nor token count, so the rankings and totals are only a rough character estimate.
+`README.md` says ACM registers three hooks, but the plugin currently registers four: `tool`, `experimental.chat.messages.transform`, `experimental.chat.system.transform`, and `event`.
+
+6. Low: partial-ID matching is broader than the docs imply.
+
+`findMsg()` in `src/tools.ts:23-25` matches exact IDs, suffixes, and arbitrary substrings. Most docs frame this as full ID or trailing partial ID. The broader substring match is convenient, but it can produce ambiguous matches.
+
+7. Low: there are still no automated tests.
+
+That is increasingly important now that ACM has stateful behavior across compaction, reminder injection, and surgical repair paths.
 
 ## Observations
 
-- The repo is small and easy to reason about.
-- The split between `index.ts`, `tools.ts`, `store.ts`, and `client.ts` is clean.
-- `bun run typecheck` passes.
-- `bun run build` passes.
-- I did not find any automated tests in the repo, which makes the boundary/pinning behavior especially risky given how stateful this plugin is.
+- The repo remains small and easy to reason about.
+- The separation between `index.ts`, `tools.ts`, `store.ts`, and `client.ts` is still clean.
+- The system-reminder path is working and now documents the first-turn-after-restart limit nuance.
+- The design is still heavily dependent on runtime/session behavior, which makes integration tests more important than unit tests alone.
 
 ## Suggestions
 
-1. Fix the pinned-message model first.
+1. Fix `acm_info` first so it reports the effective system-reminder state, not just the env-var state.
 
-Either actually rehydrate pinned pre-boundary messages into the model-visible set, or narrow the README/tool contract so it matches current behavior.
+2. Either implement real backup creation in `acm_repair` or remove the `create_backup` argument until it exists.
 
-2. Decide whether `acm_search` and `acm_fetch` are active-only or whole-session tools, then make implementation and docs agree.
+3. Update `acm_fetch` wording to match the intentional whole-session behavior.
 
-If both are useful, add an explicit flag like `include_compacted`.
+4. Update the README hook description so it reflects the current four-hook implementation.
 
-3. Replace `pendingMkp: Map<sessionID, ...>` with a queue keyed by message/tool-call identity so multiple `acm_load`s cannot clobber each other.
+5. Add focused integration tests for:
 
-4. Make `tool-result` filtering inspect tool parts specifically, not assistant role.
-
-5. Add a few focused integration tests around:
-
-- pinned messages across `acm_compact`
-- `acm_search` / `acm_fetch` before and after compaction
-- multiple `acm_load` calls in one session
-- `tool-result` filtering
+- pinned-message reinjection across `acm_compact`
+- first-turn vs second-turn system-reminder limit resolution
+- compaction marker round-trip behavior
+- `acm_repair` stuck-tool repair behavior

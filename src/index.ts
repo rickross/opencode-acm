@@ -49,6 +49,7 @@ const plugin: Plugin = async (input, options) => {
   const systemReminderEnabled = systemReminderEnv === "0" || systemReminderEnv === "false"
     ? false
     : (options?.systemReminder !== false)
+  Store.setSystemReminderEnabled(systemReminderEnabled)
 
   return {
     // -----------------------------------------------------------------------

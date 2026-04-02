@@ -212,7 +212,7 @@ export const acm_info = tool({
     }
     out += `\n`
     out += `── System Reminder ──────────────\n`
-    out += `Enabled:  ${process.env.OPENCODE_ACM_SYSTEM_REMINDER === "0" ? "no (env)" : "yes"}\n`
+    out += `Enabled:  ${Store.systemReminderEnabled ? "yes ✅" : "no ❌"}\n`
 
     return out
   },
@@ -659,8 +659,9 @@ Returns message IDs with previews for use with other ACM tools.`,
 // acm_fetch
 // ---------------------------------------------------------------------------
 export const acm_fetch = tool({
-  description: `Fetch a specific message from active context by ID.
+  description: `Fetch a specific message from the full session history by ID.
 
+Searches the entire session history — including messages before compaction boundaries.
 Accepts partial message IDs (last 12 chars) for convenience.`,
 
   args: {
@@ -903,13 +904,26 @@ Detects incomplete tool calls, aborted executions, and other issues.`,
     }
 
     const version = PKG_VERSION
-    if (issues.length === 0) return `ACM v${version} — Session ${sessionID} is healthy. ${msgs.length} messages scanned.`
+    const verbose = params.verbose ?? false
+    if (issues.length === 0) return `ACM v${version} — Session ${sessionID.slice(-16)} is healthy. ${msgs.length} messages scanned.`
 
     const errors = issues.filter((i) => i.severity === "error")
     const warnings = issues.filter((i) => i.severity === "warning")
     let output = `ACM v${version} — Session diagnostic: ${errors.length} errors, ${warnings.length} warnings\n\n`
     for (const issue of issues.slice(0, 20)) {
-      output += `${issue.severity === "error" ? "❌" : "⚠️"} ${issue.type}: ${issue.description}\n   Message: ${issue.messageID.slice(-12)}\n\n`
+      const msgId = verbose ? issue.messageID : issue.messageID.slice(-12)
+      const msg = msgs.find(m => m.info.id === issue.messageID)
+      const extra = verbose && msg
+        ? ` (role: ${(msg.info as any).role}, parts: ${msg.parts.length})`
+        : ""
+      output += `${issue.severity === "error" ? "❌" : "⚠️"} ${issue.type}: ${issue.description}\n   Message: ${msgId}${extra}\n\n`
+    }
+    if (verbose) {
+      output += `── Session ──────────────────────\n`
+      output += `ID:       ${sessionID}\n`
+      output += `Messages: ${msgs.length} total\n`
+      output += `Errors:   ${errors.length}\n`
+      output += `Warnings: ${warnings.length}\n`
     }
     return output
   },
@@ -927,7 +941,6 @@ Run acm_diagnose first to identify issues, then provide message IDs to repair.`,
     session_id: z.string().optional().describe("Session ID to repair (defaults to current)"),
     message_ids: z.array(z.string()).optional().describe("Message IDs to delete (from acm_diagnose)"),
     dry_run: z.boolean().optional().default(true).describe("Preview changes without deleting (default: true)"),
-    create_backup: z.boolean().optional().default(true).describe("Create backup before repair (default: true)"),
   },
 
   async execute(params, ctx) {
