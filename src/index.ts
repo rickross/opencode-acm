@@ -160,7 +160,7 @@ const plugin: Plugin = async (input, options) => {
         if ((msg.info as any)?.role !== "assistant") continue
         const t = (msg.info as any)?.tokens
         if (!t) continue
-        const sum = (t.total ?? 0) || (t.input + t.output + t.reasoning + (t.cache?.read ?? 0) + (t.cache?.write ?? 0))
+        const sum = (t.input ?? 0) + (t.output ?? 0) + (t.reasoning ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0)
         if (sum <= 0) continue
         total = sum
         break
