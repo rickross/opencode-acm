@@ -8,9 +8,13 @@
 import { tool } from "@opencode-ai/plugin/tool"
 import z from "zod"
 import * as fs from "fs/promises"
+import { createRequire } from "module"
 import type { Part } from "@opencode-ai/sdk"
 import * as Store from "./store.js"
 import { getMessages, getActiveMessages, type MsgWithParts } from "./client.js"
+
+const _require = createRequire(import.meta.url)
+const PKG_VERSION: string = _require("../package.json").version
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -131,7 +135,7 @@ export const acm_info = tool({
   },
 
   async execute(_params, ctx) {
-    const VERSION = "0.5.19"
+    const VERSION = PKG_VERSION
     const sessionID = ctx.sessionID
     const msgs = await getMessages(sessionID)
     const activeMsgs = await getActiveMessages(sessionID)
@@ -898,7 +902,7 @@ Detects incomplete tool calls, aborted executions, and other issues.`,
       }
     }
 
-    const version = "0.5.16"
+    const version = PKG_VERSION
     if (issues.length === 0) return `ACM v${version} — Session ${sessionID} is healthy. ${msgs.length} messages scanned.`
 
     const errors = issues.filter((i) => i.severity === "error")
