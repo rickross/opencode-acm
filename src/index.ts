@@ -172,7 +172,12 @@ const plugin: Plugin = async (input, options) => {
       for (const p of lastUserParts) {
         process.stderr.write(`[ACM debug]   part type=${p.type} synthetic=${!!(p as any).synthetic} text=${JSON.stringify((p.text ?? "").slice(0, 120))}\n`)
       }
-      const heuristicMatched = lastUserText.startsWith("[Metadata:") || lastUserText.startsWith("The user sent the following message:")
+      const heuristicMatched = (
+        lastUserText.startsWith("[Metadata:") ||
+        lastUserText.startsWith("The user sent the following message:") ||
+        lastUserText.startsWith("<system-reminder>") ||
+        lastUserText.includes("\n[Metadata: sender=")
+      )
       process.stderr.write(`[ACM debug] heuristicMatched=${heuristicMatched} → ${heuristicMatched ? "SKIP" : "INJECT"}\n`)
       if (heuristicMatched) return
 
