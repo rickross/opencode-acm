@@ -17,6 +17,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin/tool"
 import { initClient, getMessages } from "./client.js"
 import * as Store from "./store.js"
+const { tokenCache } = Store
 import * as Tools from "./tools.js"
 
 /**
@@ -37,10 +38,7 @@ function streaming(t: ReturnType<typeof tool>): ReturnType<typeof tool> {
 const COMPACTED_STUB = "[Old tool result content cleared]"
 const CONTEXT_STATUS_LIMIT = process.env.OPENCODE_CONTEXT_STATUS_LIMIT
 
-// Cache last known token counts per session — populated in messages.transform,
-// consumed in system.transform to produce accurate context-status injection.
-// Same formula as OpenCode's session-context-metrics.ts status bar indicator.
-const tokenCache = new Map<string, { total: number; limit: number | null }>()
+// tokenCache is now in store.ts so acm_status can also read it
 
 const plugin: Plugin = async (input, options) => {
   initClient(input.client)

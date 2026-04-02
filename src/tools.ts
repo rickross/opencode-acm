@@ -804,7 +804,7 @@ Detects incomplete tool calls, aborted executions, and other issues.`,
       }
     }
 
-    const version = "0.5.15"
+    const version = "0.5.16"
     if (issues.length === 0) return `ACM v${version} — Session ${sessionID} is healthy. ${msgs.length} messages scanned.`
 
     const errors = issues.filter((i) => i.severity === "error")
@@ -897,7 +897,7 @@ export const acm_status = tool({
   args: {},
 
   async execute(_params, ctx) {
-    const VERSION = "0.5.15"
+    const VERSION = "0.5.16"
     const sessionID = ctx.sessionID
     const msgs = await getMessages(sessionID)
     const activeMsgs = await getActiveMessages(sessionID)
@@ -929,10 +929,10 @@ export const acm_status = tool({
       hour: "2-digit", minute: "2-digit", timeZoneName: "short",
     })
 
-    // Get context limit from store cache if available
+    // Get context limit from token cache (populated by system.transform hook)
     const limitFromEnv = process.env.OPENCODE_CONTEXT_STATUS_LIMIT ? parseInt(process.env.OPENCODE_CONTEXT_STATUS_LIMIT, 10) : null
-    // Note: model limit not directly available in tool context — show from tokens if available
-    const contextLimit = limitFromEnv ?? null
+    const limitFromCache = Store.tokenCache.get(sessionID)?.limit ?? null
+    const contextLimit = limitFromEnv ?? limitFromCache
 
     let out = `ACM v${VERSION}\n`
     out += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`
