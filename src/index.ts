@@ -139,66 +139,74 @@ const plugin: Plugin = async (input) => {
       // Prepend to the active window
       output.messages.unshift(...wrapped)
 
-      // Cache token counts from last assistant message for system.transform
-      // Mirrors session-context-metrics.ts — the same source as the status bar
+      // -----------------------------------------------------------------------
+      // Inject system-reminder as a synthetic part on the last user message.
+      // Mirrors openfork's approach — injecting into the message stream so the
+      // agent sees it naturally in context each turn (not buried in system prompt).
+      // -----------------------------------------------------------------------
+
+      // 1. Find last assistant message with tokens (same as status bar formula)
+      let total = 0
       for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i]
         if ((msg.info as any)?.role !== "assistant") continue
         const t = (msg.info as any)?.tokens
         if (!t) continue
-        const total = (t.total ?? 0) || (t.input + t.output + t.reasoning + t.cache.read + t.cache.write)
-        if (total <= 0) continue
-        // limit comes from system.transform's model input — store null here, filled in there
-        tokenCache.set(sessionID, { total, limit: null })
+        const sum = (t.total ?? 0) || (t.input + t.output + t.reasoning + (t.cache?.read ?? 0) + (t.cache?.write ?? 0))
+        if (sum <= 0) continue
+        total = sum
         break
       }
-    },
 
-    // -----------------------------------------------------------------------
-    // System reminder: inject wall-clock time and accurate context-status
-    // Matches the values shown in OpenCode's status bar (session-context-metrics)
-    // -----------------------------------------------------------------------
-    "experimental.chat.system.transform": async (sysInput, output) => {
+      // 2. Find last user message to inject into
+      const lastUserMsg = [...messages].reverse().find(m => (m.info as any)?.role === "user")
+      if (!lastUserMsg) return
+
+      // 3. Remove any previously injected system-reminder synthetic parts (dedup)
+      ;(lastUserMsg as any).parts = (lastUserMsg as any).parts.filter(
+        (p: any) => !(p.synthetic && p.type === "text" && typeof p.text === "string" && p.text.includes("<system-reminder>"))
+      )
+
+      // 4. Build reminder text
       const now = new Date()
       const date = now.toISOString().slice(0, 10)
       const timeStr = now.toLocaleTimeString("en-US", {
         hour: "2-digit", minute: "2-digit", timeZoneName: "short", hour12: false,
       }).replace(/^24:/, "00:")
-
-      // Context limit — env override takes precedence, then model limit
       const limitFromEnv = CONTEXT_STATUS_LIMIT ? parseInt(CONTEXT_STATUS_LIMIT, 10) : null
-      const modelLimit = (sysInput.model as any)?.limit?.context ?? null
-      const limit = limitFromEnv ?? modelLimit
+      const modelLimitFromCache = tokenCache.get(sessionID)?.limit ?? null
+      const effectiveLimit = limitFromEnv ?? modelLimitFromCache
 
-      // Merge limit into cached token entry
-      const sessionID: string | undefined = (sysInput as any).sessionID
-      if (sessionID && limit) {
-        const cached = tokenCache.get(sessionID)
-        if (cached) tokenCache.set(sessionID, { ...cached, limit })
+      let reminder = `<system-reminder>\n  <time>${now.toLocaleString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}</time>`
+      if (effectiveLimit && total > 0) {
+        const pct = Math.round((total / effectiveLimit) * 100)
+        reminder += `\n  <context-status tokens="${total.toLocaleString()}" percent="${pct}%" limit="${effectiveLimit.toLocaleString()}" date="${date}" time="${timeStr}" />`
+      } else if (total > 0) {
+        reminder += `\n  <context-status tokens="${total.toLocaleString()}" percent="N%" limit="N" date="${date}" time="${timeStr}" />`
       }
+      reminder += `\n</system-reminder>`
 
-      const cached = sessionID ? tokenCache.get(sessionID) : undefined
-      const total = cached?.total ?? 0
-      const effectiveLimit = cached?.limit ?? limit
+      // 5. Push as synthetic text part on last user message
+      ;(lastUserMsg as any).parts.push({ type: "text", text: reminder, synthetic: true })
+    },
 
-      // Remove any stale system-reminder already in output (e.g. from team prompt placeholder)
-      // so we always inject a fresh, accurate one
+    // -----------------------------------------------------------------------
+    // System prompt: strip stale context-status placeholders from team prompts
+    // -----------------------------------------------------------------------
+    "experimental.chat.system.transform": async (_sysInput, output) => {
+      // Remove stale static context-status blocks (e.g. from irelate-team-prompt.txt)
+      // The live injection happens in messages.transform above
       const filtered = output.system.filter(s => !(s.includes("<system-reminder>") && s.includes("context-status")))
       output.system.length = 0
       output.system.push(...filtered)
 
-      // Build reminder block with full context-status
-      let reminder = `<system-reminder>\n  <time>${now.toLocaleString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}</time>`
-
-      if (effectiveLimit && total > 0) {
-        const pct = Math.round((total / effectiveLimit) * 100)
-        reminder += `\n  <context-status tokens="${total.toLocaleString()}" percent="${pct}%" limit="${effectiveLimit.toLocaleString()}" date="${date}" time="${timeStr}" />`
-      } else if (effectiveLimit) {
-        reminder += `\n  <context-status tokens="N" percent="N%" limit="${effectiveLimit.toLocaleString()}" date="${date}" time="${timeStr}" />`
+      // Also store model limit in cache for use in messages.transform
+      const sessionID: string | undefined = (_sysInput as any).sessionID
+      const modelLimit = (_sysInput.model as any)?.limit?.context ?? null
+      if (sessionID && modelLimit) {
+        const existing = tokenCache.get(sessionID)
+        tokenCache.set(sessionID, { total: existing?.total ?? 0, limit: modelLimit })
       }
-
-      reminder += `\n</system-reminder>`
-      output.system.push(reminder)
     },
 
     // -----------------------------------------------------------------------
