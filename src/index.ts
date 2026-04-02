@@ -208,12 +208,27 @@ const plugin: Plugin = async (input, options) => {
       output.system.length = 0
       output.system.push(...filtered)
 
-      // Also store model limit in cache for use in messages.transform
+      // Store model limit in cache for use in messages.transform
+      // Use ctx.client to get the model with user overrides applied (same as TUI)
       const sessionID: string | undefined = (_sysInput as any).sessionID
-      const modelLimit = (_sysInput.model as any)?.limit?.context ?? null
-      if (sessionID && modelLimit) {
-        const existing = tokenCache.get(sessionID)
-        tokenCache.set(sessionID, { total: existing?.total ?? 0, limit: modelLimit })
+      const modelId: string | undefined = (_sysInput.model as any)?.id
+      const providerId: string | undefined = (_sysInput.model as any)?.providerID
+      if (sessionID && modelId && providerId) {
+        try {
+          const providersResp = await input.client.provider.list()
+          const allProviders: any[] = (providersResp as any)?.data?.all ?? (providersResp as any)?.all ?? []
+          const provider = allProviders.find((p: any) => p.id === providerId)
+          const modelOverride = provider?.models?.[modelId]
+          const overrideLimit = modelOverride?.limit?.context ?? null
+          const fallbackLimit = (_sysInput.model as any)?.limit?.context ?? null
+          const resolvedLimit = overrideLimit ?? fallbackLimit
+          if (resolvedLimit) {
+            const existing = tokenCache.get(sessionID)
+            tokenCache.set(sessionID, { total: existing?.total ?? 0, limit: resolvedLimit })
+          }
+        } catch {
+          // fall through — use whatever is cached already
+        }
       }
     },
 
