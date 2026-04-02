@@ -116,34 +116,27 @@ const plugin: Plugin = async (input, options) => {
 
       // Re-inject pinned messages that are before the compaction boundary
       const pinnedIds = Store.getPinnedMessages(sessionID)
-      if (pinnedIds.length === 0) return
-
-      const presentIds = new Set(messages.map((m: any) => (m.info as any)?.id).filter(Boolean))
-      const missingPinnedIds = pinnedIds.filter(id => !presentIds.has(id))
-      if (missingPinnedIds.length === 0) return
-
-      // Fetch full session history to get the missing pinned messages
-      const allMessages = await getMessages(sessionID)
-      const allById = new Map(allMessages.map(m => [(m.info as any)?.id, m]))
-
-      const toInject = missingPinnedIds
-        .map(id => allById.get(id))
-        .filter((m): m is NonNullable<typeof m> => m !== undefined)
-
-      if (toInject.length === 0) return
-
-      // Wrap each pinned message with a synthetic marker so agents can
-      // identify them as re-injected context
-      const wrapped = toInject.map(msg => ({
-        ...msg,
-        parts: [
-          { type: "text", text: `[Pinned context re-injected by ACM]`, synthetic: true } as any,
-          ...msg.parts,
-        ],
-      }))
-
-      // Prepend to the active window
-      output.messages.unshift(...wrapped)
+      if (pinnedIds.length > 0) {
+        const presentIds = new Set(messages.map((m: any) => (m.info as any)?.id).filter(Boolean))
+        const missingPinnedIds = pinnedIds.filter(id => !presentIds.has(id))
+        if (missingPinnedIds.length > 0) {
+          const allMessages = await getMessages(sessionID)
+          const allById = new Map(allMessages.map(m => [(m.info as any)?.id, m]))
+          const toInject = missingPinnedIds
+            .map(id => allById.get(id))
+            .filter((m): m is NonNullable<typeof m> => m !== undefined)
+          if (toInject.length > 0) {
+            const wrapped = toInject.map(msg => ({
+              ...msg,
+              parts: [
+                { type: "text", text: `[Pinned context re-injected by ACM]`, synthetic: true } as any,
+                ...msg.parts,
+              ],
+            }))
+            output.messages.unshift(...wrapped)
+          }
+        }
+      }
 
       // -----------------------------------------------------------------------
       // Inject system-reminder as a synthetic part on the last user message.
@@ -170,9 +163,10 @@ const plugin: Plugin = async (input, options) => {
       const lastUserMsg = [...messages].reverse().find(m => (m.info as any)?.role === "user")
       if (!lastUserMsg) return
 
-      // 3. Remove any previously injected system-reminder synthetic parts (dedup)
+      // 3. Remove previously injected system-reminder from THIS session only (dedup)
+      // We use the session ID to avoid stripping reminders injected by other agents
       ;(lastUserMsg as any).parts = (lastUserMsg as any).parts.filter(
-        (p: any) => !(p.synthetic && p.type === "text" && typeof p.text === "string" && p.text.includes("<system-reminder>"))
+        (p: any) => !(p.synthetic && p.type === "text" && typeof p.text === "string" && p.text.includes(`session="${sessionID.slice(-8)}"`) && p.text.includes("<system-reminder"))
       )
 
       // 4. Build reminder text
@@ -185,7 +179,7 @@ const plugin: Plugin = async (input, options) => {
       const modelLimitFromCache = tokenCache.get(sessionID)?.limit ?? null
       const effectiveLimit = limitFromEnv ?? modelLimitFromCache
 
-      let reminder = `<system-reminder>\n  <time>${now.toLocaleString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}</time>`
+      let reminder = `<system-reminder session="${sessionID.slice(-8)}">\n  <time>${now.toLocaleString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}</time>`
       if (effectiveLimit && total > 0) {
         const pct = Math.round((total / effectiveLimit) * 100)
         reminder += `\n  <context-status tokens="${total.toLocaleString()}" percent="${pct}%" limit="${effectiveLimit.toLocaleString()}" date="${date}" time="${timeStr}" />`
