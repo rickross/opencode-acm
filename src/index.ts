@@ -164,6 +164,11 @@ const plugin: Plugin = async (input, options) => {
       const lastUserMsg = [...messages].reverse().find(m => (m.info as any)?.role === "user")
       if (!lastUserMsg) return
 
+      // Skip injection if last user message is from an external transport (e.g. Mattermost)
+      // — detected by the [Metadata: sender=...] prefix injected by the Mattermost plugin
+      const lastUserText = (lastUserMsg as any).parts?.find((p: any) => p.type === "text" && !p.synthetic)?.text ?? ""
+      if (lastUserText.startsWith("[Metadata:")) return
+
       // 3. Remove previously injected system-reminder synthetic parts (dedup)
       ;(lastUserMsg as any).parts = (lastUserMsg as any).parts.filter(
         (p: any) => !(p.synthetic && p.type === "text" && typeof p.text === "string" && p.text.includes("Auto-injected by ACM"))
