@@ -163,10 +163,9 @@ const plugin: Plugin = async (input, options) => {
       const lastUserMsg = [...messages].reverse().find(m => (m.info as any)?.role === "user")
       if (!lastUserMsg) return
 
-      // 3. Remove previously injected system-reminder from THIS session only (dedup)
-      // We use the session ID to avoid stripping reminders injected by other agents
+      // 3. Remove previously injected system-reminder synthetic parts (dedup)
       ;(lastUserMsg as any).parts = (lastUserMsg as any).parts.filter(
-        (p: any) => !(p.synthetic && p.type === "text" && typeof p.text === "string" && p.text.includes(`session="${sessionID.slice(-8)}"`) && p.text.includes("<system-reminder"))
+        (p: any) => !(p.synthetic && p.type === "text" && typeof p.text === "string" && p.text.includes("Auto-injected by ACM"))
       )
 
       // 4. Build reminder text
@@ -179,7 +178,7 @@ const plugin: Plugin = async (input, options) => {
       const modelLimitFromCache = tokenCache.get(sessionID)?.limit ?? null
       const effectiveLimit = limitFromEnv ?? modelLimitFromCache
 
-      let reminder = `<system-reminder session="${sessionID.slice(-8)}">\n  <time>${now.toLocaleString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}</time>`
+      let reminder = `<system-reminder>\n  <!-- Auto-injected by ACM — not from the user -->\n  <time>${now.toLocaleString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}</time>`
       if (effectiveLimit && total > 0) {
         const pct = Math.round((total / effectiveLimit) * 100)
         reminder += `\n  <context-status tokens="${total.toLocaleString()}" percent="${pct}%" limit="${effectiveLimit.toLocaleString()}" date="${date}" time="${timeStr}" />`
