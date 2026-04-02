@@ -215,8 +215,8 @@ const plugin: Plugin = async (input, options) => {
       const providerId: string | undefined = (_sysInput.model as any)?.providerID
       if (sessionID && modelId && providerId) {
         try {
-          const providersResp = await input.client.provider.list()
-          const allProviders: any[] = (providersResp as any)?.data?.all ?? (providersResp as any)?.all ?? []
+          const providersResp = await input.client.config.providers()
+          const allProviders: any[] = (providersResp as any)?.data?.providers ?? (providersResp as any)?.providers ?? []
           const provider = allProviders.find((p: any) => p.id === providerId)
           const modelOverride = provider?.models?.[modelId]
           const overrideLimit = modelOverride?.limit?.context ?? null
