@@ -37,6 +37,11 @@ function streaming(t: ReturnType<typeof tool>): ReturnType<typeof tool> {
 const COMPACTED_STUB = "[Old tool result content cleared]"
 const CONTEXT_STATUS_LIMIT = process.env.OPENCODE_CONTEXT_STATUS_LIMIT
 
+// Cache last known token counts per session — populated in messages.transform,
+// consumed in system.transform to produce accurate context-status injection.
+// Same formula as OpenCode's session-context-metrics.ts status bar indicator.
+const tokenCache = new Map<string, { total: number; limit: number | null }>()
+
 const plugin: Plugin = async (input) => {
   initClient(input.client)
 
@@ -133,35 +138,66 @@ const plugin: Plugin = async (input) => {
 
       // Prepend to the active window
       output.messages.unshift(...wrapped)
+
+      // Cache token counts from last assistant message for system.transform
+      // Mirrors session-context-metrics.ts — the same source as the status bar
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i]
+        if ((msg.info as any)?.role !== "assistant") continue
+        const t = (msg.info as any)?.tokens
+        if (!t) continue
+        const total = (t.total ?? 0) || (t.input + t.output + t.reasoning + t.cache.read + t.cache.write)
+        if (total <= 0) continue
+        // limit comes from system.transform's model input — store null here, filled in there
+        tokenCache.set(sessionID, { total, limit: null })
+        break
+      }
     },
 
     // -----------------------------------------------------------------------
-    // System reminder: inject wall-clock time and context status on every turn
-    // Restores the openfork system-reminder behavior for OpenCode 1.3+
+    // System reminder: inject wall-clock time and accurate context-status
+    // Matches the values shown in OpenCode's status bar (session-context-metrics)
     // -----------------------------------------------------------------------
     "experimental.chat.system.transform": async (sysInput, output) => {
       const now = new Date()
-      const timeStr = now.toLocaleString("en-US", {
-        weekday: "short", year: "numeric", month: "short", day: "numeric",
-        hour: "2-digit", minute: "2-digit", timeZoneName: "short",
-      })
+      const date = now.toISOString().slice(0, 10)
+      const timeStr = now.toLocaleTimeString("en-US", {
+        hour: "2-digit", minute: "2-digit", timeZoneName: "short", hour12: false,
+      }).replace(/^24:/, "00:")
 
-      // Context limit — from env var or model context window
+      // Context limit — env override takes precedence, then model limit
       const limitFromEnv = CONTEXT_STATUS_LIMIT ? parseInt(CONTEXT_STATUS_LIMIT, 10) : null
-      const modelLimit = (sysInput.model as any)?.contextLength ?? null
+      const modelLimit = (sysInput.model as any)?.limit?.context ?? null
       const limit = limitFromEnv ?? modelLimit
 
-      // Skip if OpenCode has already injected a system-reminder with time info
-      const alreadyHasReminder = output.system.some(s => s.includes("<system-reminder>") && s.includes("<time"))
-      if (alreadyHasReminder) return
-
-      // Build reminder block
-      let reminder = `<system-reminder>\n  <time>${timeStr}</time>`
-      if (limit) {
-        reminder += `\n  <context-limit>${limit.toLocaleString()} tokens</context-limit>`
+      // Merge limit into cached token entry
+      const sessionID: string | undefined = (sysInput as any).sessionID
+      if (sessionID && limit) {
+        const cached = tokenCache.get(sessionID)
+        if (cached) tokenCache.set(sessionID, { ...cached, limit })
       }
-      reminder += `\n</system-reminder>`
 
+      const cached = sessionID ? tokenCache.get(sessionID) : undefined
+      const total = cached?.total ?? 0
+      const effectiveLimit = cached?.limit ?? limit
+
+      // Remove any stale system-reminder already in output (e.g. from team prompt placeholder)
+      // so we always inject a fresh, accurate one
+      const filtered = output.system.filter(s => !(s.includes("<system-reminder>") && s.includes("context-status")))
+      output.system.length = 0
+      output.system.push(...filtered)
+
+      // Build reminder block with full context-status
+      let reminder = `<system-reminder>\n  <time>${now.toLocaleString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}</time>`
+
+      if (effectiveLimit && total > 0) {
+        const pct = Math.round((total / effectiveLimit) * 100)
+        reminder += `\n  <context-status tokens="${total.toLocaleString()}" percent="${pct}%" limit="${effectiveLimit.toLocaleString()}" date="${date}" time="${timeStr}" />`
+      } else if (effectiveLimit) {
+        reminder += `\n  <context-status tokens="N" percent="N%" limit="${effectiveLimit.toLocaleString()}" date="${date}" time="${timeStr}" />`
+      }
+
+      reminder += `\n</system-reminder>`
       output.system.push(reminder)
     },
 
