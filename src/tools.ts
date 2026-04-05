@@ -896,10 +896,10 @@ Detects incomplete tool calls, aborted executions, and other issues.`,
         if (part.type !== "tool") continue
         const p = part as any
         const status = p.state?.status
-        if (status === "pending") issues.push({ type: "incomplete_tool", severity: "error", messageID: msg.info.id, description: `Tool never started: ${p.tool}` })
+        if (p.tool === "invalid") issues.push({ type: "invalid_tool", severity: "error", messageID: msg.info.id, description: `Invalid tool call — tool not available when called` })
+        else if (status === "pending") issues.push({ type: "incomplete_tool", severity: "error", messageID: msg.info.id, description: `Tool never started: ${p.tool}` })
         else if (status === "running") issues.push({ type: "incomplete_tool", severity: "error", messageID: msg.info.id, description: `Tool never completed: ${p.tool}` })
         else if (status === "error" && p.state?.error === "Tool execution aborted") issues.push({ type: "aborted_tool", severity: "warning", messageID: msg.info.id, description: `Tool aborted: ${p.tool}` })
-        else if (p.tool === "invalid" || status === "invalid") issues.push({ type: "invalid_tool", severity: "error", messageID: msg.info.id, description: `Invalid tool call — tool not available when called: ${p.tool}` })
         if (params.tool_id && (p.toolUseID === params.tool_id || p.callID === params.tool_id)) issues.push({ type: "tool_id_found", severity: "warning", messageID: msg.info.id, description: `Found tool ID ${params.tool_id}` })
       }
     }
@@ -962,10 +962,9 @@ Run acm_diagnose first to identify issues, then provide message IDs to repair.`,
     // otherwise compact the whole message
     const stuckToolMsgs = toDelete.filter((m) =>
       m.parts.some((p: any) => p.type === "tool" && (
-        p.state?.status === "running" ||
-        p.state?.status === "pending" ||
         p.tool === "invalid" ||
-        p.state?.status === "invalid"
+        p.state?.status === "running" ||
+        p.state?.status === "pending"
       ))
     )
     const compactMsgs = toDelete.filter((m) => !stuckToolMsgs.includes(m))
