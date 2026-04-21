@@ -199,7 +199,7 @@ const plugin: Plugin = async (input, options) => {
       } else if (total > 0) {
         reminder += `\n  <context-status tokens="${total.toLocaleString()}" percent="N%" limit="N" date="${date}" time="${timeStr}" />`
       }
-      reminder += `\n</runtime-telemetry>`
+      reminder += `\n</runtime-telemetry>\n`
 
       // 5. Prepend as synthetic text part on last user message (before user content)
       ;(lastUserMsg as any).parts.unshift({ type: "text", text: reminder, synthetic: true })
