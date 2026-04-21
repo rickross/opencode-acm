@@ -201,8 +201,8 @@ const plugin: Plugin = async (input, options) => {
       }
       reminder += `\n</runtime-telemetry>`
 
-      // 5. Push as synthetic text part on last user message
-      ;(lastUserMsg as any).parts.push({ type: "text", text: reminder, synthetic: true })
+      // 5. Prepend as synthetic text part on last user message (before user content)
+      ;(lastUserMsg as any).parts.unshift({ type: "text", text: reminder, synthetic: true })
     },
 
     // -----------------------------------------------------------------------
