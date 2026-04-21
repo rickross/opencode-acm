@@ -70,7 +70,7 @@ Named file or inline-content loads created with `acm_load`. These are useful for
 
 | Category | Tools | Purpose |
 | --- | --- | --- |
-| Status | `acm_info` | Show ACM version, session, model, token usage, and system-reminder status |
+| Status | `acm_info` | Show ACM version, session, model, token usage, and runtime telemetry status |
 | Pinning | `acm_pin`, `acm_unpin`, `acm_mark` | Mark messages as important and manage pin state |
 | Pruning | `acm_scan`, `acm_prune` | Find large messages and compact specific ones |
 | Loading | `acm_load`, `acm_unload` | Load and unload named knowledge packages |
@@ -109,18 +109,18 @@ acm_map
 acm_scan with show_compacted=true
 ```
 
-## System Reminder
+## Runtime Telemetry
 
-ACM can inject a small `<system-reminder>` block into each turn. This block is not user-authored. It is a runtime hint for the model that includes the current time and context usage.
+ACM injects a small `<runtime-telemetry>` block into each turn. This block is not user-authored. It is a runtime hint for the model that includes the current time and context usage.
 
 Example:
 
 ```xml
-<system-reminder>
+<runtime-telemetry>
   <!-- Auto-injected by ACM — not from the user -->
-  <time>Thu, Apr 2, 2026 at 03:17 PM CDT</time>
-  <context-status tokens="105,939" percent="10%" limit="1,050,000" date="2026-04-02" time="15:17 CDT" />
-</system-reminder>
+  <time>Tue, Apr 21, 2026 at 04:08 PM CDT</time>
+  <context-status tokens="121,822" percent="44%" limit="275,000" date="2026-04-21" time="16:08 CDT" />
+</runtime-telemetry>
 ```
 
 This is useful when you want the model to stay aware of:
@@ -129,13 +129,13 @@ This is useful when you want the model to stay aware of:
 - approximate context usage
 - the current working limit for the active model
 
-`acm_info` reports the same status in tool form, along with ACM version, session information, message counts, and whether the system reminder is enabled.
+`acm_info` reports the same status in tool form, along with ACM version, session information, message counts, and whether runtime telemetry is enabled.
 
-On the first turn after a restart, the reminder may not yet have a resolved context limit. That is expected. ACM cannot read the runtime model-limit data until after a full turn has completed. On the next turn, the reminder should show the resolved limit and percentage normally.
+On the first turn after a restart, the telemetry may not yet have a resolved context limit. That is expected. ACM cannot read the runtime model-limit data until after a full turn has completed. On the next turn, it should show the resolved limit and percentage normally.
 
-### Disabling the system reminder
+### Disabling runtime telemetry
 
-The system reminder is enabled by default.
+Runtime telemetry is enabled by default.
 
 You can disable it in two ways:
 
@@ -145,7 +145,7 @@ You can disable it in two ways:
 {
   "plugin": {
     "opencode-acm@latest": {
-      "systemReminder": false
+      "runtimeTelemetry": false
     }
   }
 }
@@ -154,8 +154,10 @@ You can disable it in two ways:
 2. Environment variable in the agent environment:
 
 ```text
-OPENCODE_ACM_SYSTEM_REMINDER=0
+OPENCODE_ACM_RUNTIME_TELEMETRY=0
 ```
+
+The legacy `OPENCODE_ACM_SYSTEM_REMINDER` environment variable is still accepted for backward compatibility.
 
 If both are present, the environment variable takes precedence.
 

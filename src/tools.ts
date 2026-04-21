@@ -128,7 +128,7 @@ When called with no parameters, lists all currently pinned messages.`,
 // acm_info
 // ---------------------------------------------------------------------------
 export const acm_info = tool({
-  description: `Show ACM plugin status: version, session info, context metrics (tokens/percent/limit), compaction state, and system-reminder status.`,
+  description: `Show ACM plugin status: version, session info, context metrics (tokens/percent/limit), compaction state, and runtime-telemetry status.`,
 
   args: {
     _unused: z.string().optional().describe("Unused — call with no arguments"),
@@ -142,7 +142,7 @@ export const acm_info = tool({
     const compacted = Store.getCompactedMessages(sessionID)
     const pinned = Store.getPinnedMessages(sessionID)
 
-    // Find last assistant message with tokens — same formula as system-reminder
+    // Find last assistant message with tokens — same formula as runtime-telemetry
     let total = 0
     let modelID = "unknown"
     let providerID = "unknown"
@@ -211,8 +211,8 @@ export const acm_info = tool({
       }
     }
     out += `\n`
-    out += `── System Reminder ──────────────\n`
-    out += `Enabled:  ${Store.systemReminderEnabled ? "yes ✅" : "no ❌"}\n`
+    out += `── Runtime Telemetry ─────────────\n`
+    out += `Enabled:  ${Store.runtimeTelemetryEnabled ? "yes ✅" : "no ❌"}\n`
 
     return out
   },
@@ -1003,5 +1003,4 @@ Run acm_diagnose first to identify issues, then provide message IDs to repair.`,
     return `Repaired ${toDelete.length} message(s):\n\n${results.join("\n")}`
   },
 })
-
 

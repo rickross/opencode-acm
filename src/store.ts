@@ -15,9 +15,9 @@ const DATA_DIR = process.env.OPENCODE_DATA_DIR || path.join(os.homedir(), ".loca
 // Accessible by acm_info tool to show live context metrics
 export const tokenCache = new Map<string, { total: number; limit: number | null }>()
 
-// Effective system-reminder state — set at plugin init, read by acm_info
-export let systemReminderEnabled = true
-export function setSystemReminderEnabled(val: boolean) { systemReminderEnabled = val }
+// Effective runtime-telemetry state — set at plugin init, read by acm_info
+export let runtimeTelemetryEnabled = true
+export function setRuntimeTelemetryEnabled(val: boolean) { runtimeTelemetryEnabled = val }
 
 let _db: Database | null = null
 

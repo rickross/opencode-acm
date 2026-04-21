@@ -43,13 +43,14 @@ const CONTEXT_STATUS_LIMIT = process.env.OPENCODE_CONTEXT_STATUS_LIMIT
 const plugin: Plugin = async (input, options) => {
   initClient(input.client)
 
-  // systemReminder: inject context-status into message stream each turn
+  // runtimeTelemetry: inject context-status into message stream each turn
   // Default: true. Disable via plugin options or env var.
-  const systemReminderEnv = process.env.OPENCODE_ACM_SYSTEM_REMINDER
-  const systemReminderEnabled = systemReminderEnv === "0" || systemReminderEnv === "false"
+  // Also accepts legacy OPENCODE_ACM_SYSTEM_REMINDER for backward compatibility.
+  const runtimeTelemetryEnv = process.env.OPENCODE_ACM_RUNTIME_TELEMETRY ?? process.env.OPENCODE_ACM_SYSTEM_REMINDER
+  const runtimeTelemetryEnabled = runtimeTelemetryEnv === "0" || runtimeTelemetryEnv === "false"
     ? false
-    : (options?.systemReminder !== false)
-  Store.setSystemReminderEnabled(systemReminderEnabled)
+    : (options?.runtimeTelemetry !== false)
+  Store.setRuntimeTelemetryEnabled(runtimeTelemetryEnabled)
 
   return {
     // -----------------------------------------------------------------------
@@ -140,11 +141,11 @@ const plugin: Plugin = async (input, options) => {
       }
 
       // -----------------------------------------------------------------------
-      // Inject system-reminder as a synthetic part on the last user message.
+      // Inject runtime-telemetry as a synthetic part on the last user message.
       // Mirrors openfork's approach — injecting into the message stream so the
       // agent sees it naturally in context each turn (not buried in system prompt).
       // -----------------------------------------------------------------------
-      if (!systemReminderEnabled) return
+      if (!runtimeTelemetryEnabled) return
 
       // 1. Find last completed assistant message tokens
       // Use t.total — matches TUI status bar exactly
@@ -171,12 +172,12 @@ const plugin: Plugin = async (input, options) => {
       const heuristicMatched = (
         lastUserText.startsWith("[Metadata:") ||
         lastUserText.startsWith("The user sent the following message:") ||
-        lastUserText.startsWith("<system-reminder>") ||
+        lastUserText.startsWith("<runtime-telemetry>") ||
         lastUserText.includes("\n[Metadata: sender=")
       )
       if (heuristicMatched) return
 
-      // 3. Remove previously injected system-reminder synthetic parts (dedup)
+      // 3. Remove previously injected runtime-telemetry synthetic parts (dedup)
       ;(lastUserMsg as any).parts = (lastUserMsg as any).parts.filter(
         (p: any) => !(p.synthetic && p.type === "text" && typeof p.text === "string" && p.text.includes("Auto-injected by ACM"))
       )
@@ -191,14 +192,14 @@ const plugin: Plugin = async (input, options) => {
       const modelLimitFromCache = tokenCache.get(sessionID)?.limit ?? null
       const effectiveLimit = limitFromEnv ?? modelLimitFromCache
 
-      let reminder = `<system-reminder>\n  <!-- Auto-injected by ACM — not from the user -->\n  <time>${now.toLocaleString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}</time>`
+      let reminder = `<runtime-telemetry>\n  <!-- Auto-injected by ACM — not from the user -->\n  <time>${now.toLocaleString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}</time>`
       if (effectiveLimit && total > 0) {
         const pct = Math.round((total / effectiveLimit) * 100)
         reminder += `\n  <context-status tokens="${total.toLocaleString()}" percent="${pct}%" limit="${effectiveLimit.toLocaleString()}" date="${date}" time="${timeStr}" />`
       } else if (total > 0) {
         reminder += `\n  <context-status tokens="${total.toLocaleString()}" percent="N%" limit="N" date="${date}" time="${timeStr}" />`
       }
-      reminder += `\n</system-reminder>`
+      reminder += `\n</runtime-telemetry>`
 
       // 5. Push as synthetic text part on last user message
       ;(lastUserMsg as any).parts.push({ type: "text", text: reminder, synthetic: true })
@@ -210,7 +211,7 @@ const plugin: Plugin = async (input, options) => {
     "experimental.chat.system.transform": async (_sysInput, output) => {
       // Remove stale static context-status blocks (e.g. from irelate-team-prompt.txt)
       // The live injection happens in messages.transform above
-      const filtered = output.system.filter(s => !(s.includes("<system-reminder>") && s.includes("context-status")))
+      const filtered = output.system.filter(s => !((s.includes("<system-reminder>") || s.includes("<runtime-telemetry>")) && s.includes("context-status")))
       output.system.length = 0
       output.system.push(...filtered)
 
