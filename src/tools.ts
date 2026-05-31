@@ -419,7 +419,45 @@ function assistantText(msg: MsgWithParts): string {
   for (const part of msg.parts) {
     if (part.type === "text") text += (part as any).text ?? ""
   }
-  return text.trim()
+  return stripOuterMarkdown(text.trim())
+}
+
+// Strip common outer markdown wrappers so noop-detection survives an emitter
+// that wraps the literal pattern in backticks/italics/bold. Outer-only — only
+// strips when the entire string is wrapped and the interior contains no
+// instances of the wrapping character. Iterates because a token may be wrapped
+// twice (e.g. **`en veille`** → `en veille` → en veille).
+function stripOuterMarkdown(s: string): string {
+  let prev = ""
+  let cur = s
+  while (cur !== prev) {
+    prev = cur
+    // backticks: `x` or ``x`` or ```x``` — only if interior has no backticks
+    const bt = cur.match(/^(`+)([^`]*)\1$/)
+    if (bt && bt[2] !== undefined && bt[2].length > 0) {
+      cur = bt[2].trim()
+      continue
+    }
+    // bold: **x** or __x__ — only if interior has no asterisks/underscores
+    if (cur.startsWith("**") && cur.endsWith("**") && cur.length >= 4) {
+      const inner = cur.slice(2, -2)
+      if (!inner.includes("*")) { cur = inner.trim(); continue }
+    }
+    if (cur.startsWith("__") && cur.endsWith("__") && cur.length >= 4) {
+      const inner = cur.slice(2, -2)
+      if (!inner.includes("_")) { cur = inner.trim(); continue }
+    }
+    // italic: *x* or _x_ — only if interior has no asterisks/underscores
+    if (cur.startsWith("*") && cur.endsWith("*") && cur.length >= 2 && !cur.startsWith("**")) {
+      const inner = cur.slice(1, -1)
+      if (!inner.includes("*")) { cur = inner.trim(); continue }
+    }
+    if (cur.startsWith("_") && cur.endsWith("_") && cur.length >= 2 && !cur.startsWith("__")) {
+      const inner = cur.slice(1, -1)
+      if (!inner.includes("_")) { cur = inner.trim(); continue }
+    }
+  }
+  return cur
 }
 
 export const acm_prune_noops: ToolDefinition = tool({
