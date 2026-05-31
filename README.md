@@ -161,6 +161,28 @@ The legacy `OPENCODE_ACM_SYSTEM_REMINDER` environment variable is still accepted
 
 If both are present, the environment variable takes precedence.
 
+### Compact heartbeat
+
+For fast-moving sessions where full runtime telemetry is too noisy, ACM also supports a compact heartbeat line appended to the last user message.
+
+Example:
+
+```json
+{
+  "plugin": [
+    ["opencode-acm@latest", {
+      "runtimeTelemetry": false,
+      "heartbeat": "[submitted at: {time} | {context_pct}% | {model} | msgs:{messages}]",
+      "heartbeatTz": "America/Chicago"
+    }]
+  ]
+}
+```
+
+See [`HEARTBEAT.md`](./HEARTBEAT.md) for the full variable reference.
+
+The heartbeat can also include literal text such as `not typed by Rick`; ACM only substitutes recognized `{variables}`.
+
 **Compact to the last 30 active minutes**
 
 ```text

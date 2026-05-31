@@ -8,6 +8,7 @@
 import { Database } from "bun:sqlite"
 import path from "path"
 import os from "os"
+import { randomBytes } from "crypto"
 
 const DATA_DIR = process.env.OPENCODE_DATA_DIR || path.join(os.homedir(), ".local", "share", "opencode")
 
@@ -20,6 +21,19 @@ export let runtimeTelemetryEnabled = true
 export function setRuntimeTelemetryEnabled(val: boolean) { runtimeTelemetryEnabled = val }
 
 let _db: Database | null = null
+
+function opencodeDb(): Database {
+  const ocDbPath = path.join(DATA_DIR, "opencode.db")
+  const ocDb = new Database(ocDbPath)
+  ocDb.run("PRAGMA journal_mode=WAL")
+  return ocDb
+}
+
+function repairId(prefix: "msg" | "prt", label: string): string {
+  const stamp = Date.now().toString(36)
+  const suffix = randomBytes(4).toString("hex")
+  return `${prefix}_acm_${label}_${stamp}_${suffix}`
+}
 
 function db(): Database {
   if (_db) return _db
@@ -178,6 +192,110 @@ export function deleteSession(sessionId: string): void {
   db().run("DELETE FROM acm_metadata WHERE session_id = ?", [sessionId])
 }
 
+export function deleteRawMessage(sessionId: string, messageId: string): { deletedMessages: number; deletedParts: number } {
+  const ocDb = opencodeDb()
+  const acmDb = db()
+  try {
+    ocDb.run("BEGIN")
+    const deletedParts = ocDb.run("DELETE FROM part WHERE session_id = ? AND message_id = ?", [sessionId, messageId]).changes
+    const deletedMessages = ocDb.run("DELETE FROM message WHERE session_id = ? AND id = ?", [sessionId, messageId]).changes
+    ocDb.run("COMMIT")
+    acmDb.run("DELETE FROM acm_metadata WHERE session_id = ? AND message_id = ?", [sessionId, messageId])
+    return { deletedMessages, deletedParts }
+  } catch (e) {
+    ocDb.run("ROLLBACK")
+    throw e
+  } finally {
+    ocDb.close()
+  }
+}
+
+export function insertAssistantPairForUser(input: {
+  sessionId: string
+  userMessageId: string
+  userCreatedAt: number
+  agent?: string
+  providerID?: string
+  modelID?: string
+  variant?: string
+  cwd?: string
+  root?: string
+  note?: string
+}): { messageId: string; partsAdded: number } {
+  const ocDb = opencodeDb()
+  const now = Math.max(Date.now(), input.userCreatedAt + 1)
+  const msgId = repairId("msg", "pair")
+  const stepStartId = repairId("prt", "step_start")
+  const textId = repairId("prt", "text")
+  const stepFinishId = repairId("prt", "step_finish")
+  const note = input.note ?? "[Session repair] Inserted minimal assistant completion for an orphaned user message that had no assistant pair."
+
+  try {
+    ocDb.run("BEGIN")
+    ocDb.run(
+      "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
+      [
+        msgId,
+        input.sessionId,
+        now,
+        now,
+        JSON.stringify({
+          parentID: input.userMessageId,
+          role: "assistant",
+          mode: input.agent ?? "build",
+          agent: input.agent ?? "build",
+          variant: input.variant,
+          path: { cwd: input.cwd ?? process.cwd(), root: input.root ?? process.cwd() },
+          cost: 0,
+          tokens: { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } },
+          modelID: input.modelID ?? "unknown",
+          providerID: input.providerID ?? "unknown",
+          time: { created: now, completed: now },
+          finish: "stop",
+        }),
+      ],
+    )
+    ocDb.run(
+      "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
+      [stepStartId, msgId, input.sessionId, now, now, JSON.stringify({ type: "step-start" })],
+    )
+    ocDb.run(
+      "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
+      [
+        textId,
+        msgId,
+        input.sessionId,
+        now + 1,
+        now + 1,
+        JSON.stringify({ type: "text", text: note, synthetic: true, time: { start: now, end: now } }),
+      ],
+    )
+    ocDb.run(
+      "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
+      [
+        stepFinishId,
+        msgId,
+        input.sessionId,
+        now + 2,
+        now + 2,
+        JSON.stringify({
+          type: "step-finish",
+          reason: "stop",
+          tokens: { total: 0, input: 0, output: 0, reasoning: 0, cache: { write: 0, read: 0 } },
+          cost: 0,
+        }),
+      ],
+    )
+    ocDb.run("COMMIT")
+    return { messageId: msgId, partsAdded: 3 }
+  } catch (e) {
+    ocDb.run("ROLLBACK")
+    throw e
+  } finally {
+    ocDb.close()
+  }
+}
+
 /**
  * Fix stuck tool parts in opencode.db for a given message.
  *
@@ -189,9 +307,7 @@ export function deleteSession(sessionId: string): void {
  * Also sets finish: "error" on the message itself if finish is null.
  */
 export function fixStuckParts(sessionId: string, messageId: string): { partsFixed: number; toolResultsAdded: number; stepFinishAdded: boolean; messageFinishFixed: boolean } {
-  const ocDbPath = path.join(DATA_DIR, "opencode.db")
-  const ocDb = new Database(ocDbPath)
-  ocDb.run("PRAGMA journal_mode=WAL")
+  const ocDb = opencodeDb()
 
   let partsFixed = 0
   let toolResultsAdded = 0
@@ -323,6 +439,8 @@ export function insertCompactionMarker(
         id: markerMsgId,
         sessionID: sessionId,
         time: { created: atTime },
+        agent: "acm",
+        model: { providerID: "acm", modelID: "compaction" },
       }),
     ])
 
@@ -362,6 +480,7 @@ export function insertCompactionMarker(
         cost: 0,
         tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
         finish: "stop",
+        path: { cwd: "/", root: "/" },
       }),
     ])
 

@@ -37,10 +37,25 @@ function streaming(t: ReturnType<typeof tool>): ReturnType<typeof tool> {
 
 const COMPACTED_STUB = "[Old tool result content cleared]"
 const CONTEXT_STATUS_LIMIT = process.env.OPENCODE_CONTEXT_STATUS_LIMIT
+const RUNTIME_TELEMETRY_MARKER = "Auto-injected by ACM"
+
+function isRuntimeTelemetryPart(part: any): boolean {
+  return part?.synthetic === true && part?.type === "text" && typeof part.text === "string" && part.text.includes(RUNTIME_TELEMETRY_MARKER)
+}
+
+function isRuntimeTelemetryMessage(message: any): boolean {
+  return typeof message?.info?.id === "string" && message.info.id.startsWith("msg_acm_runtime_telemetry_")
+}
 
 // tokenCache is now in store.ts so acm_info can also read it
 
 const plugin: Plugin = async (input, options) => {
+  // Diagnostic: log received options on startup
+  try {
+    const fs = await import("fs")
+    const logPath = `${input.directory}/.opencode/acm-options-debug.json`
+    fs.writeFileSync(logPath, JSON.stringify({ options, directory: input.directory }, null, 2))
+  } catch (_) {}
   initClient(input.client)
 
   // runtimeTelemetry: inject context-status into message stream each turn
@@ -52,6 +67,18 @@ const plugin: Plugin = async (input, options) => {
     : (options?.runtimeTelemetry !== false)
   Store.setRuntimeTelemetryEnabled(runtimeTelemetryEnabled)
 
+  // heartbeat: configurable per-agent timestamp line appended to last user message.
+  // Default template: "[submitted at: {time}]"
+  // Supported variables: {time}, {model}, {session}, {context_pct}, {context_tokens}, {messages}, etc.
+  // Set to false/null to disable entirely.
+  // heartbeatTz: IANA timezone for {time} rendering. Default: "America/Chicago"
+  const heartbeatTemplate: string | false =
+    options?.heartbeat === false || options?.heartbeat === null
+      ? false
+      : (typeof options?.heartbeat === "string" ? options.heartbeat : "[submitted at: {time}]")
+  const heartbeatTz: string =
+    typeof options?.heartbeatTz === "string" ? options.heartbeatTz : "America/Chicago"
+
   return {
     // -----------------------------------------------------------------------
     // Register all ACM tools
@@ -62,6 +89,7 @@ const plugin: Plugin = async (input, options) => {
       acm_info: streaming(Tools.acm_info),
       acm_compact: streaming(Tools.acm_compact),
       acm_prune: streaming(Tools.acm_prune),
+      acm_prune_noops: streaming(Tools.acm_prune_noops),
       acm_scan: streaming(Tools.acm_scan),
       acm_load: streaming(Tools.acm_load),
       acm_unload: streaming(Tools.acm_unload),
@@ -90,10 +118,42 @@ const plugin: Plugin = async (input, options) => {
 
       const compacted = Store.getCompactedMessages(sessionID)
 
-      // Replace compacted message content with stubs
+      // Strip <system-reminder>...</system-reminder> wrappers injected by the
+      // OpenCode headless server's prompt_async path. These wrap user messages
+      // routed through Mattermost/external transports and change the model's
+      // relationship to the user's actual words. The DB stores clean text —
+      // this wrapper only exists in the runtime payload.
+      // Strip <system-reminder> wrappers injected by OpenCode's SessionPrompt.
+      // The wrapper takes the form:
+      //   <system-reminder>\nThe user sent the following message:\n[content]\nPlease address...\n</system-reminder>
+      // We extract [content] and discard the wrapper boilerplate.
+      // Never produce an empty text part — Claude requires non-empty user turns.
+      const SYSTEM_REMINDER_RE = /<system-reminder>\s*(?:The user sent the following message:\s*)?([\s\S]*?)(?:\s*Please address this message and continue with your tasks\.?)?\s*<\/system-reminder>/g
+      for (const msg of messages) {
+        if ((msg.info as any)?.role !== "user") continue
+        for (const part of msg.parts) {
+          if (part.type !== "text" || (part as any).synthetic) continue
+          const original = (part as any).text ?? ""
+          const result = original.replace(SYSTEM_REMINDER_RE, (_match: string, inner: string) => inner.trim()).trim()
+          if (result !== original) {
+            // Never produce an empty string — fall back to original if extraction yields nothing
+            ;(part as any).text = result.length > 0 ? result : original
+          }
+        }
+      }
+
+      // Replace compacted message content with stubs.
+      // CRITICAL: Skip messages containing thinking/redacted_thinking blocks —
+      // Anthropic Opus 4.8+ signs these cryptographically and rejects any
+      // modification, including array reconstruction via spread.
       for (const msg of messages) {
         const msgId = (msg.info as any)?.id
         if (!msgId || !compacted.has(msgId)) continue
+
+        const hasThinking = (msg.parts ?? []).some(
+          (p: any) => p.type === "thinking" || p.type === "redacted_thinking"
+        )
+        if (hasThinking) continue
 
         const newParts: typeof msg.parts = []
         for (const part of msg.parts) {
@@ -141,9 +201,111 @@ const plugin: Plugin = async (input, options) => {
       }
 
       // -----------------------------------------------------------------------
-      // Inject runtime-telemetry as a synthetic part on the last user message.
-      // Mirrors openfork's approach — injecting into the message stream so the
-      // agent sees it naturally in context each turn (not buried in system prompt).
+      // Append wall-clock timestamp to the last user message.
+      // ~3 tokens, sits outside the cached prefix, gives the model its bearings.
+      // -----------------------------------------------------------------------
+      if (heartbeatTemplate !== false) {
+        const timestampTargetMsg = [...messages].reverse().find((m: any) => (m.info as any)?.role === "user")
+        if (timestampTargetMsg) {
+          const timestampTargetPart = [...timestampTargetMsg.parts].reverse().find((p: any) => p.type === "text" && !(p as any).synthetic)
+          if (timestampTargetPart) {
+            const now = new Date()
+            // Render {time} in local timezone (configurable via heartbeatTz option)
+            const timeStr = now.toLocaleString("en-US", {
+              timeZone: heartbeatTz,
+              year: "numeric", month: "2-digit", day: "2-digit",
+              hour: "2-digit", minute: "2-digit",
+              hour12: false,
+              timeZoneName: "short",
+            }).replace(/(\d+)\/(\d+)\/(\d+),\s*/, "$3-$1-$2 ") // MM/DD/YYYY → YYYY-MM-DD
+
+            // {day} and {date} in local timezone
+            const localParts = new Intl.DateTimeFormat("en-US", {
+              timeZone: heartbeatTz,
+              weekday: "short", year: "numeric", month: "2-digit", day: "2-digit",
+            }).formatToParts(now)
+            const dayStr = localParts.find(p => p.type === "weekday")?.value ?? ""
+            const dateStr = [
+              localParts.find(p => p.type === "year")?.value,
+              localParts.find(p => p.type === "month")?.value,
+              localParts.find(p => p.type === "day")?.value,
+            ].join("-")
+
+            // {session}
+            const sessionID2: string = (messages[0]?.info as any)?.sessionID ?? ""
+            const sessionShort = sessionID2 ? sessionID2.slice(-8) : ""
+
+            // {model} — last assistant message's modelID
+            let modelStr = ""
+            for (let i = messages.length - 1; i >= 0; i--) {
+              const m = messages[i] as any
+              if (m?.info?.role === "assistant" && m?.info?.modelID) {
+                modelStr = m.info.modelID
+                break
+              }
+            }
+
+            // {messages}, {active}, {compacted}, {pinned}
+            const totalMsgs = messages.length
+            const compactedSet = sessionID2 ? Store.getCompactedMessages(sessionID2) : new Set<string>()
+            const pinnedIds = sessionID2 ? Store.getPinnedMessages(sessionID2) : []
+            const compactedCount = compactedSet.size
+            const pinnedCount = pinnedIds.length
+            const activeMsgs = totalMsgs - compactedCount
+
+            // {context_tokens} and {context_pct} — read from last assistant message (same as telemetry)
+            let contextTokens = 0
+            for (let i = messages.length - 1; i >= 0; i--) {
+              const m = messages[i] as any
+              if (m?.info?.role !== "assistant") continue
+              const t = m?.info?.tokens
+              if (!t) continue
+              const sum = (t.total ?? 0) || (t.input + t.output + t.reasoning + (t.cache?.read ?? 0) + (t.cache?.write ?? 0))
+              if (sum > 0) { contextTokens = sum; break }
+            }
+            const limitFromCache = sessionID2 ? (tokenCache.get(sessionID2)?.limit ?? null) : null
+            const contextLimit = CONTEXT_STATUS_LIMIT ? parseInt(CONTEXT_STATUS_LIMIT, 10) : limitFromCache
+            const contextPct = contextLimit && contextLimit > 0
+              ? Math.round((contextTokens / contextLimit) * 100)
+              : 0
+
+            // {uptime} — time since first message in session
+            let uptimeStr = ""
+            if (messages.length > 0) {
+              const firstCreated = (messages[0]?.info as any)?.time?.created
+              if (firstCreated) {
+                const elapsedMs = Date.now() - firstCreated
+                const elapsedMin = Math.floor(elapsedMs / 60000)
+                const elapsedHr = Math.floor(elapsedMin / 60)
+                uptimeStr = elapsedHr > 0
+                  ? `${elapsedHr}h${elapsedMin % 60}m`
+                  : `${elapsedMin}m`
+              }
+            }
+
+            const heartbeat = heartbeatTemplate
+              .replace(/\{time\}/g, timeStr)
+              .replace(/\{day\}/g, dayStr)
+              .replace(/\{date\}/g, dateStr)
+              .replace(/\{model\}/g, modelStr)
+              .replace(/\{session\}/g, sessionShort)
+              .replace(/\{messages\}/g, String(totalMsgs))
+              .replace(/\{active\}/g, String(activeMsgs))
+              .replace(/\{compacted\}/g, String(compactedCount))
+              .replace(/\{pinned\}/g, String(pinnedCount))
+              .replace(/\{context_tokens\}/g, String(contextTokens))
+              .replace(/\{context_pct\}/g, String(contextPct))
+              .replace(/\{uptime\}/g, uptimeStr)
+
+            ;(timestampTargetPart as any).text = ((timestampTargetPart as any).text ?? "").trimEnd() + `\n\n${heartbeat}`
+          }
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // Inject runtime-telemetry as a synthetic message immediately before the
+      // current user message. This keeps the volatile telemetry late for prefix
+      // caching while preserving the user's message as the final salient input.
       // -----------------------------------------------------------------------
       if (!runtimeTelemetryEnabled) return
 
@@ -161,8 +323,25 @@ const plugin: Plugin = async (input, options) => {
         break
       }
 
-      // 2. Find last user message to inject into
-      const lastUserMsg = [...messages].reverse().find(m => (m.info as any)?.role === "user")
+      // 2. Remove previously injected runtime-telemetry from this in-memory turn.
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i] as any
+        if (isRuntimeTelemetryMessage(msg)) {
+          messages.splice(i, 1)
+          continue
+        }
+        msg.parts = (msg.parts ?? []).filter((p: any) => !isRuntimeTelemetryPart(p))
+      }
+
+      // 3. Find last user message to place telemetry before
+      const lastUserIndex = (() => {
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if ((messages[i].info as any)?.role === "user") return i
+        }
+        return -1
+      })()
+      if (lastUserIndex === -1) return
+      const lastUserMsg = messages[lastUserIndex]
       if (!lastUserMsg) return
 
       // Skip injection if last user message is from an external transport (e.g. Mattermost)
@@ -177,11 +356,6 @@ const plugin: Plugin = async (input, options) => {
       )
       if (heuristicMatched) return
 
-      // 3. Remove previously injected runtime-telemetry synthetic parts (dedup)
-      ;(lastUserMsg as any).parts = (lastUserMsg as any).parts.filter(
-        (p: any) => !(p.synthetic && p.type === "text" && typeof p.text === "string" && p.text.includes("Auto-injected by ACM"))
-      )
-
       // 4. Build reminder text
       const now = new Date()
       const date = now.toISOString().slice(0, 10)
@@ -192,7 +366,7 @@ const plugin: Plugin = async (input, options) => {
       const modelLimitFromCache = tokenCache.get(sessionID)?.limit ?? null
       const effectiveLimit = limitFromEnv ?? modelLimitFromCache
 
-      let reminder = `<runtime-telemetry>\n  <!-- Auto-injected by ACM — not from the user -->\n  <time>${now.toLocaleString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}</time>`
+      let reminder = `<runtime-telemetry>\n  <!-- ${RUNTIME_TELEMETRY_MARKER} — not from the user -->\n  <time>${now.toLocaleString("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}</time>`
       if (effectiveLimit && total > 0) {
         const pct = Math.round((total / effectiveLimit) * 100)
         reminder += `\n  <context-status tokens="${total.toLocaleString()}" percent="${pct}%" limit="${effectiveLimit.toLocaleString()}" date="${date}" time="${timeStr}" />`
@@ -201,8 +375,19 @@ const plugin: Plugin = async (input, options) => {
       }
       reminder += `\n</runtime-telemetry>\n`
 
-      // 5. Prepend as synthetic text part on last user message (before user content)
-      ;(lastUserMsg as any).parts.unshift({ type: "text", text: reminder, synthetic: true })
+      // 5. Insert as a synthetic message before the current user message.
+      const lastUserInfo = (lastUserMsg as any).info ?? {}
+      messages.splice(lastUserIndex, 0, {
+        info: {
+          ...lastUserInfo,
+          id: `msg_acm_runtime_telemetry_${lastUserInfo.id ?? sessionID}`,
+          time: {
+            ...(lastUserInfo.time ?? {}),
+            created: Math.max(0, (lastUserInfo.time?.created ?? Date.now()) - 1),
+          },
+        },
+        parts: [{ type: "text", text: reminder, synthetic: true } as any],
+      })
     },
 
     // -----------------------------------------------------------------------

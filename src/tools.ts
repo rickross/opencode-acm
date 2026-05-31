@@ -5,14 +5,14 @@
  * These are registered via the `tool` hook in the plugin Hooks interface.
  */
 
-import { tool } from "@opencode-ai/plugin/tool"
-import z from "zod"
+import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
 import * as fs from "fs/promises"
 import { createRequire } from "module"
 import type { Part } from "@opencode-ai/sdk"
 import * as Store from "./store.js"
 import { getMessages, getActiveMessages, type MsgWithParts } from "./client.js"
 
+const z = tool.schema
 const _require = createRequire(import.meta.url)
 const PKG_VERSION: string = _require("../package.json").version
 
@@ -42,7 +42,19 @@ function getPartText(part: Part): string {
   if (part.type === "text") return part.text ?? ""
   if (part.type === "tool") {
     const p = part as any
-    if (p.state?.status === "completed") return JSON.stringify(p.state.output ?? "")
+    let text = ""
+    // Count args regardless of state — they can be large
+    if (p.state?.args) text += JSON.stringify(p.state.args)
+    // Count output when completed
+    if (p.state?.status === "completed") text += JSON.stringify(p.state.output ?? "")
+    // Count error output
+    if (p.state?.status === "error") text += JSON.stringify(p.state.error ?? "")
+    return text
+  }
+  // tool-result is a separate part type used in some message flows
+  if ((part as any).type === "tool-result") {
+    const p = part as any
+    return JSON.stringify(p.content ?? p.output ?? "")
   }
   return ""
 }
@@ -62,7 +74,7 @@ function messageChars(msg: { parts: Part[] }): { chars: number; preview: string 
 // ---------------------------------------------------------------------------
 // acm_pin
 // ---------------------------------------------------------------------------
-export const acm_pin = tool({
+export const acm_pin: ToolDefinition = tool({
   description: `Mark a message as permanent bedrock memory that survives all compactions.
 
 Use this for critical context that should never be forgotten.
@@ -127,7 +139,7 @@ When called with no parameters, lists all currently pinned messages.`,
 // ---------------------------------------------------------------------------
 // acm_info
 // ---------------------------------------------------------------------------
-export const acm_info = tool({
+export const acm_info: ToolDefinition = tool({
   description: `Show ACM plugin status: version, session info, context metrics (tokens/percent/limit), compaction state, and runtime-telemetry status.`,
 
   args: {
@@ -221,7 +233,7 @@ export const acm_info = tool({
 // ---------------------------------------------------------------------------
 // acm_unpin
 // ---------------------------------------------------------------------------
-export const acm_unpin = tool({
+export const acm_unpin: ToolDefinition = tool({
   description: `Remove pin status from a message, allowing it to be compacted normally.
 
 Accepts partial message IDs (last 12 chars) for convenience.`,
@@ -244,7 +256,7 @@ Accepts partial message IDs (last 12 chars) for convenience.`,
 // ---------------------------------------------------------------------------
 // acm_compact
 // ---------------------------------------------------------------------------
-export const acm_compact = tool({
+export const acm_compact: ToolDefinition = tool({
   description: `Automatically prune old messages to maintain a sliding time window.
 
 Simple: Keep last N minutes of conversation, prune everything older.
@@ -315,7 +327,9 @@ This maintains a focused working memory while keeping recent context intact.`,
       return `Failed to insert compaction marker: ${e?.message ?? e}`
     }
 
-    return `Compaction boundary set at ${new Date(cutoff).toISOString()}. Keeping ${toKeep.length} messages. ACM and OpenCode now agree on active context.`
+    return `Compaction boundary set at ${new Date(cutoff).toISOString()}. Keeping ${toKeep.length} messages. ACM and OpenCode now agree on active context.
+
+Note: the token count reflected in heartbeat/acm_info this turn is from *before* the compaction took effect. The updated token count will appear on the next turn.`
   },
 })
 
@@ -338,7 +352,7 @@ function computeActiveCutoff(msgs: MsgWithParts[], targetMinutes: number, gapThr
 // ---------------------------------------------------------------------------
 // acm_prune
 // ---------------------------------------------------------------------------
-export const acm_prune = tool({
+export const acm_prune: ToolDefinition = tool({
   description: `Surgically compact specific messages from context.
 
 Use acm_scan to identify bloated messages, then prune them by ID.
@@ -371,9 +385,166 @@ Accepts partial message IDs (last 12 chars) for convenience.`,
 })
 
 // ---------------------------------------------------------------------------
+// acm_prune_noops
+// ---------------------------------------------------------------------------
+
+/** Detect if a user message is a pacemaker idle-opportunity fire. */
+function isPacemakerFire(msg: MsgWithParts): boolean {
+  if ((msg.info as any).role !== "user") return false
+  for (const part of msg.parts) {
+    const text = getPartText(part)
+    if (text.includes("sender=ace-opencode-listener") &&
+        text.includes("authority=idle-opportunity")) {
+      return true
+    }
+  }
+  return false
+}
+
+/** Detect if a message contains a thinking/reasoning block (defensive skip
+ *  to avoid corrupting Anthropic signed blocks under compaction). */
+function hasReasoningPart(msg: MsgWithParts): boolean {
+  for (const part of msg.parts) {
+    const t = (part as any).type
+    if (t === "reasoning" || t === "thinking" || t === "redacted-thinking" || t === "redacted_thinking") {
+      return true
+    }
+  }
+  return false
+}
+
+/** Extract plain text content from an assistant message for noop-pattern matching. */
+function assistantText(msg: MsgWithParts): string {
+  let text = ""
+  for (const part of msg.parts) {
+    if (part.type === "text") text += (part as any).text ?? ""
+  }
+  return text.trim()
+}
+
+export const acm_prune_noops: ToolDefinition = tool({
+  description: `Surgically compact pacemaker idle-opportunity noop pairs.
+
+Scans active context for system pacemaker fires followed by agent noop responses
+and compacts them. Useful to keep context clean of accumulated dormancy markers
+without shifting the compaction boundary.
+
+A pair is two consecutive active messages:
+  1. user message from sender=ace-opencode-listener with authority=idle-opportunity
+  2. immediately-following assistant message whose plain-text content matches the
+     configured noop pattern (default: exact "en veille")
+
+The pair is only pruned when:
+  - the pair is older than 'before_minutes' (default 5)
+  - the assistant response contains no reasoning/thinking parts (defensive)
+  - the user message is not pinned
+
+The most-recent 'keep_last' pairs are preserved as evidence (default 1).
+
+Pass dry_run=true to see what would be pruned without acting.`,
+
+  args: {
+    pattern: z.string().optional().describe("Exact noop pattern to match in the assistant response (default: 'en veille')"),
+    dry_run: z.boolean().optional().default(false).describe("Show what would be pruned without doing it"),
+    keep_last: z.number().min(0).optional().default(1).describe("Keep the most-recent N noop pairs as evidence (default: 1)"),
+    before_minutes: z.number().min(0).optional().default(5).describe("Only prune pairs older than this many minutes (default: 5)"),
+  },
+
+  async execute(params, ctx) {
+    const msgs = await getActiveMessages(ctx.sessionID)
+    const pattern = (params.pattern ?? "en veille").trim()
+    const now = Date.now()
+    const cutoffMs = now - (params.before_minutes ?? 5) * 60_000
+
+    interface Pair { fire: MsgWithParts; resp: MsgWithParts; reason: string }
+    const allPairs: Pair[] = []
+
+    for (let i = 0; i < msgs.length - 1; i++) {
+      const fire = msgs[i]
+      const resp = msgs[i + 1]
+      if (!isPacemakerFire(fire)) continue
+      if ((resp.info as any).role !== "assistant") continue
+
+      const respText = assistantText(resp)
+      if (respText !== pattern) continue
+
+      allPairs.push({ fire, resp, reason: "match" })
+    }
+
+    if (allPairs.length === 0) {
+      return `acm_prune_noops: no noop pairs found matching pattern "${pattern}".`
+    }
+
+    // Sort by recency (oldest first) so we keep the *most recent* N
+    allPairs.sort((a, b) => a.fire.info.time.created - b.fire.info.time.created)
+    const keepN = params.keep_last ?? 1
+    const candidatePairs = keepN > 0 ? allPairs.slice(0, -keepN) : allPairs
+
+    // Apply per-pair safety filters
+    interface FilteredPair extends Pair { willPrune: boolean; skipReason?: string }
+    const filtered: FilteredPair[] = candidatePairs.map((p) => {
+      const fireEntry = Store.getEntry(ctx.sessionID, p.fire.info.id)
+      const respEntry = Store.getEntry(ctx.sessionID, p.resp.info.id)
+
+      if (fireEntry?.compacted && respEntry?.compacted) {
+        return { ...p, willPrune: false, skipReason: "already compacted" }
+      }
+      if (fireEntry?.pinned || respEntry?.pinned) {
+        return { ...p, willPrune: false, skipReason: "pinned" }
+      }
+      if (p.fire.info.time.created > cutoffMs) {
+        return { ...p, willPrune: false, skipReason: "too recent" }
+      }
+      if (hasReasoningPart(p.resp)) {
+        return { ...p, willPrune: false, skipReason: "response has reasoning part" }
+      }
+      return { ...p, willPrune: true }
+    })
+
+    const toPrune = filtered.filter((p) => p.willPrune)
+    const skipped = filtered.filter((p) => !p.willPrune)
+    const kept = allPairs.slice(-keepN)
+
+    const lines: string[] = []
+    lines.push(`acm_prune_noops: found ${allPairs.length} matching noop pair(s).`)
+    lines.push(`  keeping last ${kept.length} as evidence`)
+    lines.push(`  candidates: ${candidatePairs.length}`)
+    lines.push(`  will prune: ${toPrune.length}`)
+    if (skipped.length > 0) {
+      lines.push(`  skipped: ${skipped.length}`)
+      const reasonCounts: Record<string, number> = {}
+      for (const s of skipped) {
+        const r = s.skipReason ?? "unknown"
+        reasonCounts[r] = (reasonCounts[r] ?? 0) + 1
+      }
+      for (const [r, n] of Object.entries(reasonCounts)) {
+        lines.push(`    - ${r}: ${n}`)
+      }
+    }
+
+    if (params.dry_run) {
+      lines.push("")
+      lines.push("Dry run — no changes applied.")
+      return lines.join("\n")
+    }
+
+    let compactedCount = 0
+    for (const pair of toPrune) {
+      Store.compactMessage(ctx.sessionID, pair.fire.info.id)
+      Store.compactMessage(ctx.sessionID, pair.resp.info.id)
+      compactedCount += 2
+    }
+
+    lines.push("")
+    lines.push(`Compacted ${compactedCount} message(s) across ${toPrune.length} pair(s).`)
+    return lines.join("\n")
+  },
+})
+
+// ---------------------------------------------------------------------------
 // acm_scan
 // ---------------------------------------------------------------------------
-export const acm_scan = tool({
+export const acm_scan: ToolDefinition = tool({
   description: `Scan for heavyweight messages in context.
 
 Returns a list sorted by size — candidates for pruning.
@@ -451,7 +622,7 @@ Pairs with acm_prune for surgical context reduction.`,
 // ---------------------------------------------------------------------------
 // acm_load
 // ---------------------------------------------------------------------------
-export const acm_load = tool({
+export const acm_load: ToolDefinition = tool({
   description: `Load content into context as a pinned message (Modular Knowledge Package).
 
 Load a file or raw content into your active context. Pinned by default so it survives compaction.
@@ -512,7 +683,7 @@ export const pendingMkp = new Map<string, Array<{ name: string; messageId: strin
 // ---------------------------------------------------------------------------
 // acm_unload
 // ---------------------------------------------------------------------------
-export const acm_unload = tool({
+export const acm_unload: ToolDefinition = tool({
   description: `Unload a knowledge package from context.
 
 Remove a previously loaded MKP by name or message ID. This compacts the content
@@ -546,7 +717,7 @@ Use acm_pin with no args to list pinned messages including loaded MKPs.`,
 // ---------------------------------------------------------------------------
 // acm_mark
 // ---------------------------------------------------------------------------
-export const acm_mark = tool({
+export const acm_mark: ToolDefinition = tool({
   description: `Mark messages for pinning or compaction in active context management.
 
 Use this to curate active context by marking old/irrelevant messages for compaction
@@ -590,7 +761,7 @@ Accepts partial message IDs (last 12 chars) for convenience.`,
 // ---------------------------------------------------------------------------
 // acm_search
 // ---------------------------------------------------------------------------
-export const acm_search = tool({
+export const acm_search: ToolDefinition = tool({
   description: `Search and get relevant context for any programming task using Exa Code API.
 
 Searches the FULL session history by default — including messages before compaction boundaries.
@@ -658,7 +829,7 @@ Returns message IDs with previews for use with other ACM tools.`,
 // ---------------------------------------------------------------------------
 // acm_fetch
 // ---------------------------------------------------------------------------
-export const acm_fetch = tool({
+export const acm_fetch: ToolDefinition = tool({
   description: `Fetch a specific message from the full session history by ID.
 
 Searches the entire session history — including messages before compaction boundaries.
@@ -693,7 +864,7 @@ Accepts partial message IDs (last 12 chars) for convenience.`,
 // ---------------------------------------------------------------------------
 // acm_map
 // ---------------------------------------------------------------------------
-export const acm_map = tool({
+export const acm_map: ToolDefinition = tool({
   description: `Show message size distribution across time windows to understand where your context budget is going.
 
 Displays message counts and character counts (rough size proxy) for time buckets.
@@ -804,7 +975,7 @@ Helps you decide where to prune and whether pruning will actually save meaningfu
 // ---------------------------------------------------------------------------
 // acm_snapshot
 // ---------------------------------------------------------------------------
-export const acm_snapshot = tool({
+export const acm_snapshot: ToolDefinition = tool({
   description: `Capture a snapshot of the current context payload to a file.
 
 Useful for debugging what the model is currently seeing.`,
@@ -859,7 +1030,7 @@ Useful for debugging what the model is currently seeing.`,
 // ---------------------------------------------------------------------------
 // acm_diagnose
 // ---------------------------------------------------------------------------
-export const acm_diagnose = tool({
+export const acm_diagnose: ToolDefinition = tool({
   description: `Diagnose session corruption and health issues.
 
 Detects incomplete tool calls, aborted executions, and other issues.`,
@@ -876,8 +1047,17 @@ Detects incomplete tool calls, aborted executions, and other issues.`,
 
     interface Issue { type: string; severity: "error" | "warning"; messageID: string; description: string }
     const issues: Issue[] = []
-
+    const assistantChildren = new Map<string, string[]>()
     for (const msg of msgs) {
+      const info = msg.info as any
+      if (info.role !== "assistant" || !info.parentID) continue
+      const children = assistantChildren.get(info.parentID) ?? []
+      children.push(msg.info.id)
+      assistantChildren.set(info.parentID, children)
+    }
+
+    for (let index = 0; index < msgs.length; index++) {
+      const msg = msgs[index]
       if (msg.info.id === ctx.messageID) continue
       const info = msg.info as any
       const role = info.role
@@ -889,6 +1069,12 @@ Detects incomplete tool calls, aborted executions, and other issues.`,
           issues.push({ type: "aborted_message", severity: "error", messageID: msg.info.id, description: `Aborted assistant message with no finish: ${info.error?.name ?? "unknown error"}` })
         } else if (msg.parts.length === 0 && !info.finish) {
           issues.push({ type: "empty_message", severity: "error", messageID: msg.info.id, description: `Empty assistant message with no parts and no finish` })
+        }
+      } else if (role === "user") {
+        const children = assistantChildren.get(msg.info.id) ?? []
+        const hasLaterMessage = msgs.slice(index + 1).some((later) => (later.info as any).role === "user" || (later.info as any).role === "assistant")
+        if (children.length === 0 && hasLaterMessage) {
+          issues.push({ type: "orphaned_user", severity: "error", messageID: msg.info.id, description: `User message has no assistant child; TUI may show subsequent messages as QUEUED` })
         }
       }
 
@@ -933,7 +1119,7 @@ Detects incomplete tool calls, aborted executions, and other issues.`,
 // ---------------------------------------------------------------------------
 // acm_repair
 // ---------------------------------------------------------------------------
-export const acm_repair = tool({
+export const acm_repair: ToolDefinition = tool({
   description: `Repair session corruption by removing problematic messages.
 
 Run acm_diagnose first to identify issues, then provide message IDs to repair.`,
@@ -958,20 +1144,41 @@ Run acm_diagnose first to identify issues, then provide message IDs to repair.`,
 
     if (toDelete.length === 0) return `None of the provided IDs were found in session ${sessionID}.`
 
-    // Classify each message: if it has stuck or invalid tool parts, fix surgically;
-    // otherwise compact the whole message
+    const assistantChildren = new Map<string, string[]>()
+    for (const msg of msgs) {
+      const info = msg.info as any
+      if (info.role !== "assistant" || !info.parentID) continue
+      const children = assistantChildren.get(info.parentID) ?? []
+      children.push(msg.info.id)
+      assistantChildren.set(info.parentID, children)
+    }
+
+    // Classify each message. QUEUED-causing shapes require raw OpenCode DB
+    // repair; ACM-only compaction does not fix the TUI sequence invariants.
+    const orphanedUsers = toDelete.filter((m) => (m.info as any).role === "user" && (assistantChildren.get(m.info.id) ?? []).length === 0)
+    const emptyAssistantMsgs = toDelete.filter((m) => {
+      const info = m.info as any
+      return info.role === "assistant" && !info.finish && !info.error && m.parts.length === 0
+    })
     const stuckToolMsgs = toDelete.filter((m) =>
+      !emptyAssistantMsgs.includes(m) &&
       m.parts.some((p: any) => p.type === "tool" && (
         p.tool === "invalid" ||
         p.state?.status === "running" ||
         p.state?.status === "pending"
       ))
     )
-    const compactMsgs = toDelete.filter((m) => !stuckToolMsgs.includes(m))
+    const compactMsgs = toDelete.filter((m) => !orphanedUsers.includes(m) && !emptyAssistantMsgs.includes(m) && !stuckToolMsgs.includes(m))
 
     const plan = toDelete.map((m) => {
-      const hasStuck = stuckToolMsgs.includes(m)
-      return `  - ${m.info.id} (${(m.info as any).role}, ${m.parts.length} parts)${hasStuck ? " [stuck tool — surgical fix]" : " [compact]"}`
+      const action = orphanedUsers.includes(m)
+        ? " [orphaned user — insert assistant pair]"
+        : emptyAssistantMsgs.includes(m)
+          ? " [empty assistant — delete raw ghost]"
+          : stuckToolMsgs.includes(m)
+            ? " [stuck tool — surgical fix]"
+            : " [compact]"
+      return `  - ${m.info.id} (${(m.info as any).role}, ${m.parts.length} parts)${action}`
     }).join("\n")
 
     if (params.dry_run) {
@@ -980,16 +1187,38 @@ Run acm_diagnose first to identify issues, then provide message IDs to repair.`,
 
     const results: string[] = []
 
+    // Insert a minimal completed assistant child for user messages that were
+    // accepted by OpenCode but never received an assistant pair. This restores
+    // the TUI pairing invariant without deleting user content.
+    for (const msg of orphanedUsers) {
+      const info = msg.info as any
+      const model = info.model ?? {}
+      const r = Store.insertAssistantPairForUser({
+        sessionId: sessionID,
+        userMessageId: msg.info.id,
+        userCreatedAt: info.time?.created ?? Date.now(),
+        agent: info.agent,
+        providerID: model.providerID,
+        modelID: model.modelID,
+        variant: model.variant,
+      })
+      results.push(`  - ${msg.info.id} (${info.role}, ${msg.parts.length} parts) — inserted assistant pair ${r.messageId} (+${r.partsAdded} parts)`)
+    }
+
+    // Delete empty assistant ghosts. They contain no user-visible content and
+    // cannot be completed meaningfully because they have no parts or finish.
+    for (const msg of emptyAssistantMsgs) {
+      const r = Store.deleteRawMessage(sessionID, msg.info.id)
+      results.push(`  - ${msg.info.id} (${(msg.info as any).role}, ${msg.parts.length} parts) — deleted ghost (${r.deletedMessages} message, ${r.deletedParts} parts)`)
+    }
+
     // Surgical fix for stuck tool parts
     for (const msg of stuckToolMsgs) {
       try {
         const r = Store.fixStuckParts(sessionID, msg.info.id)
         results.push(`  - ${msg.info.id} (${(msg.info as any).role}, ${msg.parts.length} parts) — fixed ${r.partsFixed} stuck part(s), +${r.toolResultsAdded} tool-result(s)${r.stepFinishAdded ? ", +step-finish" : ""}${r.messageFinishFixed ? ", finish fixed" : ""}`)
       } catch (e: any) {
-        // Fall back to compaction if surgical fix fails
-        Store.compactMessage(sessionID, msg.info.id)
-        Store.unpinMessage(sessionID, msg.info.id)
-        results.push(`  - ${msg.info.id} (${(msg.info as any).role}, ${msg.parts.length} parts) — surgical fix failed (${e.message}), compacted`)
+        results.push(`  - ${msg.info.id} (${(msg.info as any).role}, ${msg.parts.length} parts) — surgical fix failed (${e.message}); no raw changes applied for this message`)
       }
     }
 
@@ -1003,4 +1232,3 @@ Run acm_diagnose first to identify issues, then provide message IDs to repair.`,
     return `Repaired ${toDelete.length} message(s):\n\n${results.join("\n")}`
   },
 })
-
