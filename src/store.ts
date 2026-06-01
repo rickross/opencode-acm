@@ -16,6 +16,10 @@ const DATA_DIR = process.env.OPENCODE_DATA_DIR || path.join(os.homedir(), ".loca
 // Accessible by acm_info tool to show live context metrics
 export const tokenCache = new Map<string, { total: number; limit: number | null }>()
 
+// Per-session prompt cache — captures system prompt segments at submit-time
+// for the acm_context_breakdown tool
+export const promptCache = new Map<string, { systemSegments: string[]; systemChars: number }>()
+
 // Effective runtime-telemetry state — set at plugin init, read by acm_info
 export let runtimeTelemetryEnabled = true
 export function setRuntimeTelemetryEnabled(val: boolean) { runtimeTelemetryEnabled = val }

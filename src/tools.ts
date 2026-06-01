@@ -1155,6 +1155,231 @@ Detects incomplete tool calls, aborted executions, and other issues.`,
 })
 
 // ---------------------------------------------------------------------------
+// acm_context_breakdown
+// ---------------------------------------------------------------------------
+export const acm_context_breakdown: ToolDefinition = tool({
+  description: `Show where context tokens are going across structural sources.
+
+Breaks down prompt consumption by source: system prompt (instructions, skills,
+AGENTS.md), messages (active, compacted, pinned), OM slab, and ACM injections.
+Helps identify which levers actually move the needle vs. which are theatrical.
+
+Sources marked [measured] use actual data. Sources marked [estimated] use
+character-to-token heuristics (÷4). Sources marked [unknown] are not
+currently observable from the plugin layer.`,
+
+  args: {
+    verbose: z.boolean().optional().default(false).describe("Show per-segment breakdown of system prompt"),
+  },
+
+  async execute(params, ctx) {
+    const sessionID = ctx.sessionID
+    const msgs = await getActiveMessages(sessionID)
+
+    // ── Token estimation heuristic ──────────────────────────────
+    // ~4 chars per token is a reasonable average across English text
+    // and code. Not exact, but good enough for structural visibility.
+    const estTokens = (chars: number) => Math.round(chars / 4)
+
+    const lines: string[] = []
+    const sources: Array<{ name: string; chars: number; tokens: number; label: string }> = []
+
+    // ── 1. System prompt [measured] ─────────────────────────────
+    const cached = Store.promptCache.get(sessionID)
+    const systemChars = cached?.systemChars ?? 0
+    sources.push({ name: "System prompt", chars: systemChars, tokens: estTokens(systemChars), label: "measured" })
+
+    // ── 2. Messages [measured — from OpenCode metadata] ─────────
+    let activeTokens = 0
+    let activeChars = 0
+    let compactedCount = 0
+    let pinnedCount = 0
+    const compacted = Store.getCompactedMessages(sessionID)
+    const pinned = Store.getPinnedMessages(sessionID)
+    const pinnedSet = new Set(pinned)
+
+    for (const msg of msgs) {
+      const msgChars = messageChars(msg)
+      const msgId = (msg.info as any)?.id
+      const info = msg.info as any
+
+      // Token count from OpenCode's model response (actual, not estimated)
+      const t = info?.tokens
+      const msgTokens = t
+        ? ((t.total ?? 0) || (t.input + t.output + t.reasoning + (t.cache?.read ?? 0) + (t.cache?.write ?? 0)))
+        : estTokens(msgChars.chars)
+
+      if (compacted.has(msgId)) {
+        compactedCount++
+        // Compacted messages show as stubs — their chars are in the stub text,
+        // but their original size is what matters for budget understanding.
+        // We don't have original size post-compaction, so skip from active total.
+      } else if (pinnedSet.has(msgId)) {
+        pinnedCount++
+        activeTokens += msgTokens
+        activeChars += msgChars.chars
+      } else {
+        activeTokens += msgTokens
+        activeChars += msgChars.chars
+      }
+    }
+    sources.push({ name: "Active messages", chars: activeChars, tokens: activeTokens, label: "measured" })
+
+    // ── 3. OM slab [measured — from OM plugin injection] ────────
+    // The OM slab is injected as a synthetic text part. We can detect
+    // it by looking for the characteristic markers in user messages.
+    let omChars = 0
+    for (const msg of msgs) {
+      if ((msg.info as any)?.role !== "user") continue
+      for (const part of msg.parts) {
+        const text = getPartText(part)
+        if (text.includes("<organizational-memory>") || text.includes("Date:") && text.includes("🔴")) {
+          omChars += text.length
+        }
+      }
+    }
+    if (omChars > 0) {
+      sources.push({ name: "OM slab", chars: omChars, tokens: estTokens(omChars), label: "measured" })
+    }
+
+    // ── 4. ACM runtime telemetry [measured — we inject it] ──────
+    let telemetryChars = 0
+    for (const msg of msgs) {
+      if ((msg.info as any)?.id?.startsWith("msg_acm_runtime_telemetry_")) {
+        for (const part of msg.parts) {
+          telemetryChars += getPartText(part).length
+        }
+      }
+    }
+    if (telemetryChars > 0) {
+      sources.push({ name: "ACM telemetry", chars: telemetryChars, tokens: estTokens(telemetryChars), label: "measured" })
+    }
+
+    // ── 5. ACM heartbeat [measured — we inject it] ──────────────
+    // The heartbeat is appended to the last user message, not a separate part.
+    // We can't easily separate it from user content, so estimate from the
+    // known template shape (~80 chars typical).
+    // Skip for now — too small to matter at this resolution.
+
+    // ── 6. AGENTS.md [estimated — from filesystem] ──────────────
+    let agentsMdChars = 0
+    const agentsMdPaths = [
+      `${process.env.HOME}/.config/opencode/AGENTS.md`,
+      `${process.env.HOME}/.horde/AGENTS.md`,
+    ]
+    // Also check the working directory for project-level AGENTS.md
+    if (ctx.directory) {
+      agentsMdPaths.unshift(`${ctx.directory}/AGENTS.md`)
+    }
+    for (const p of agentsMdPaths) {
+      try {
+        const content = await fs.readFile(p, "utf-8")
+        agentsMdChars += content.length
+      } catch {}
+    }
+    if (agentsMdChars > 0) {
+      sources.push({ name: "AGENTS.md", chars: agentsMdChars, tokens: estTokens(agentsMdChars), label: "estimated" })
+    }
+
+    // ── 7. MCP tool schemas [estimated — from config count] ─────
+    // MCP tool definitions are injected into the prompt by OpenCode's core.
+    // Each tool schema is typically 200-800 chars of JSON. We can count
+    // enabled MCP servers from the config files and estimate.
+    let mcpToolChars = 0
+    let mcpServerCount = 0
+    const configPaths = [
+      `${process.env.HOME}/.config/opencode/opencode.json`,
+      `${ctx.directory}/opencode.json`,
+    ]
+    for (const p of configPaths) {
+      try {
+        const raw = await fs.readFile(p, "utf-8")
+        const config = JSON.parse(raw)
+        const mcp = config.mcp ?? {}
+        for (const [name, serverConfig] of Object.entries(mcp)) {
+          const s = serverConfig as any
+          if (s.enabled === false) continue
+          mcpServerCount++
+          // Estimate: each MCP server exposes 5-15 tools, each ~400 chars avg
+          mcpToolChars += 10 * 400
+        }
+      } catch {}
+    }
+    if (mcpToolChars > 0) {
+      sources.push({ name: `MCP schemas (~${mcpServerCount} servers)`, chars: mcpToolChars, tokens: estTokens(mcpToolChars), label: "estimated" })
+    }
+
+    // ── 8. Skills [estimated — from system prompt substring] ─────
+    // Skills are embedded in the system prompt. If we can find the
+    // <available_skills> block, we can measure it separately.
+    if (cached?.systemSegments) {
+      const fullSystem = cached.systemSegments.join("\n")
+      const skillsMatch = fullSystem.match(/<available_skills>[\s\S]*?<\/available_skills>/)
+      if (skillsMatch) {
+        // Don't double-count: subtract from system prompt total
+        const skillsChars = skillsMatch[0].length
+        sources.push({ name: "Skills block", chars: skillsChars, tokens: estTokens(skillsChars), label: "measured" })
+        // Adjust system prompt to exclude skills (they're already counted)
+        sources[0].chars -= skillsChars
+        sources[0].tokens -= estTokens(skillsChars)
+      }
+    }
+
+    // ── 9. Unknown remainder ────────────────────────────────────
+    const limit = Store.tokenCache.get(sessionID)?.limit ?? null
+    const totalFromMeta = Store.tokenCache.get(sessionID)?.total ?? 0
+    const knownChars = sources.reduce((s, x) => s + x.chars, 0)
+    const knownTokens = sources.reduce((s, x) => s + x.tokens, 0)
+
+    // ── Render output ───────────────────────────────────────────
+    lines.push("ACM Context Breakdown")
+    lines.push("═".repeat(50))
+    lines.push("")
+
+    for (const src of sources) {
+      const name = src.name.padEnd(28)
+      const tokens = String(src.tokens).padStart(8)
+      const chars = String(src.chars).padStart(10)
+      lines.push(`  ${name} ${tokens} tok  (${chars} ch)  [${src.label}]`)
+    }
+
+    lines.push("  " + "─".repeat(55))
+
+    // Show both estimated total and OpenCode's actual token count
+    lines.push(`  ${"Known sources".padEnd(28)} ${String(knownTokens).padStart(8)} tok`)
+    if (totalFromMeta > 0) {
+      lines.push(`  ${"OpenCode total".padEnd(28)} ${String(totalFromMeta).padStart(8)} tok`)
+      const unknownTokens = totalFromMeta - knownTokens
+      if (unknownTokens > 0) {
+        lines.push(`  ${"Unaccounted".padEnd(28)} ${String(unknownTokens).padStart(8)} tok  (tool defs, formatting, etc.)`)
+      }
+    }
+    if (limit) {
+      const pct = Math.round((totalFromMeta / limit) * 100)
+      lines.push(`  ${"Context limit".padEnd(28)} ${String(limit).padStart(8)} tok  (${pct}% used)`)
+    }
+
+    if (params.verbose && cached?.systemSegments) {
+      lines.push("")
+      lines.push("── System prompt segments ─────────")
+      for (let i = 0; i < cached.systemSegments.length; i++) {
+        const seg = cached.systemSegments[i]
+        const preview = seg.slice(0, 80).replace(/\n/g, "\\n")
+        const label = i === 0 ? "(first segment)" : i === cached.systemSegments.length - 1 ? "(last segment)" : `(${i + 1}/${cached.systemSegments.length})`
+        lines.push(`  Segment ${label}: ${seg.length} ch ~${estTokens(seg.length)} tok`)
+        lines.push(`    ${preview}${seg.length > 80 ? "..." : ""}`)
+      }
+    }
+
+    lines.push("")
+    lines.push("Note: token estimates use ÷4 heuristic. MCP schemas and")
+    lines.push("skills are approximate. Run with verbose=true for details.")
+
+    return lines.join("\n")
+  },
+})
+
+// ---------------------------------------------------------------------------
 // acm_repair
 // ---------------------------------------------------------------------------
 export const acm_repair: ToolDefinition = tool({

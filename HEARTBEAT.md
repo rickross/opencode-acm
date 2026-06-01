@@ -2,6 +2,8 @@
 
 ACM can append a compact heartbeat line to the last user message. This is useful when full runtime telemetry is too large or too noisy for fast-moving conversations.
 
+Heartbeat injection is opt-in. Set `heartbeat` to `true` to enable it.
+
 Configure it in `opencode.json`:
 
 ```json
@@ -9,14 +11,15 @@ Configure it in `opencode.json`:
   "plugin": [
     ["opencode-acm@latest", {
       "runtimeTelemetry": false,
-      "heartbeat": "[submitted at: {time} | {context_pct}% | {model} | msgs:{messages}]",
+      "heartbeat": true,
+      "heartbeat_format": "[submitted at: {time} | {context_pct}% | {model} | msgs:{messages}]",
       "heartbeatTz": "America/Chicago"
     }]
   ]
 }
 ```
 
-Set `heartbeat` to `false` or `null` to disable the heartbeat entirely.
+Set `heartbeat` to `false` or omit it to disable the heartbeat entirely. `heartbeat_format` only controls the text template; it does not enable or disable injection.
 
 The template may include ordinary literal text. ACM only replaces recognized `{variables}`; every other character is preserved exactly.
 
@@ -24,7 +27,8 @@ Example:
 
 ```json
 {
-  "heartbeat": "[not typed by Rick | {context_pct}% | {model}]"
+  "heartbeat": true,
+  "heartbeat_format": "[not typed by Rick | {context_pct}% | {model}]"
 }
 ```
 

@@ -67,15 +67,15 @@ const plugin: Plugin = async (input, options) => {
     : (options?.runtimeTelemetry !== false)
   Store.setRuntimeTelemetryEnabled(runtimeTelemetryEnabled)
 
-  // heartbeat: configurable per-agent timestamp line appended to last user message.
+  // heartbeat: controls whether ACM appends a heartbeat line.
+  // heartbeat_format: configurable per-agent timestamp line format.
   // Default template: "[submitted at: {time}]"
   // Supported variables: {time}, {model}, {session}, {context_pct}, {context_tokens}, {messages}, etc.
-  // Set to false/null to disable entirely.
+  // Set heartbeat to true to enable injection.
   // heartbeatTz: IANA timezone for {time} rendering. Default: "America/Chicago"
-  const heartbeatTemplate: string | false =
-    options?.heartbeat === false || options?.heartbeat === null
-      ? false
-      : (typeof options?.heartbeat === "string" ? options.heartbeat : "[submitted at: {time}]")
+  const heartbeatEnabled: boolean = options?.heartbeat === true
+  const heartbeatTemplate: string =
+    typeof options?.heartbeat_format === "string" ? options.heartbeat_format : "[submitted at: {time}]"
   const heartbeatTz: string =
     typeof options?.heartbeatTz === "string" ? options.heartbeatTz : "America/Chicago"
 
@@ -99,6 +99,7 @@ const plugin: Plugin = async (input, options) => {
       acm_map: streaming(Tools.acm_map),
       acm_snapshot: streaming(Tools.acm_snapshot),
       acm_diagnose: streaming(Tools.acm_diagnose),
+      acm_context_breakdown: streaming(Tools.acm_context_breakdown),
       acm_repair: streaming(Tools.acm_repair),
     },
 
@@ -204,7 +205,7 @@ const plugin: Plugin = async (input, options) => {
       // Append wall-clock timestamp to the last user message.
       // ~3 tokens, sits outside the cached prefix, gives the model its bearings.
       // -----------------------------------------------------------------------
-      if (heartbeatTemplate !== false) {
+      if (heartbeatEnabled) {
         const timestampTargetMsg = [...messages].reverse().find((m: any) => (m.info as any)?.role === "user")
         if (timestampTargetMsg) {
           const timestampTargetPart = [...timestampTargetMsg.parts].reverse().find((p: any) => p.type === "text" && !(p as any).synthetic)
@@ -397,11 +398,18 @@ const plugin: Plugin = async (input, options) => {
       // Remove stale static context-status blocks (e.g. from irelate-team-prompt.txt)
       // The live injection happens in messages.transform above
       const filtered = output.system.filter(s => !((s.includes("<system-reminder>") || s.includes("<runtime-telemetry>")) && s.includes("context-status")))
+
+      // Capture system prompt for context_breakdown before filtering
+      const sessionID: string | undefined = (_sysInput as any).sessionID
+      if (sessionID) {
+        const systemChars = filtered.reduce((sum, s) => sum + s.length, 0)
+        Store.promptCache.set(sessionID, { systemSegments: [...filtered], systemChars })
+      }
+
       output.system.length = 0
       output.system.push(...filtered)
 
       // Also store model limit in cache for use in messages.transform
-      const sessionID: string | undefined = (_sysInput as any).sessionID
       const modelLimit = (_sysInput.model as any)?.limit?.context ?? null
       if (sessionID && modelLimit) {
         const existing = tokenCache.get(sessionID)

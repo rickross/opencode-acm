@@ -165,6 +165,8 @@ If both are present, the environment variable takes precedence.
 
 For fast-moving sessions where full runtime telemetry is too noisy, ACM also supports a compact heartbeat line appended to the last user message.
 
+Heartbeat injection is opt-in. Set `heartbeat` to `true` to enable it.
+
 Example:
 
 ```json
@@ -172,7 +174,8 @@ Example:
   "plugin": [
     ["opencode-acm@latest", {
       "runtimeTelemetry": false,
-      "heartbeat": "[submitted at: {time} | {context_pct}% | {model} | msgs:{messages}]",
+      "heartbeat": true,
+      "heartbeat_format": "[submitted at: {time} | {context_pct}% | {model} | msgs:{messages}]",
       "heartbeatTz": "America/Chicago"
     }]
   ]
@@ -181,7 +184,7 @@ Example:
 
 See [`HEARTBEAT.md`](./HEARTBEAT.md) for the full variable reference.
 
-The heartbeat can also include literal text such as `not typed by Rick`; ACM only substitutes recognized `{variables}`.
+The heartbeat format can also include literal text such as `not typed by Rick`; ACM only substitutes recognized `{variables}`. Set `heartbeat` to `false` or omit it to disable injection; `heartbeat_format` only controls the rendered text.
 
 **Compact to the last 30 active minutes**
 
