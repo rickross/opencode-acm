@@ -99,7 +99,6 @@ const plugin: Plugin = async (input, options) => {
       acm_map: streaming(Tools.acm_map),
       acm_snapshot: streaming(Tools.acm_snapshot),
       acm_diagnose: streaming(Tools.acm_diagnose),
-      acm_context_breakdown: streaming(Tools.acm_context_breakdown),
       acm_repair: streaming(Tools.acm_repair),
     },
 
