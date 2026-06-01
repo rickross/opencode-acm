@@ -248,27 +248,20 @@ messages, OM slab, ACM injections, AGENTS.md, MCP schemas. This is the full
     }
 
     // 2. Messages [measured]
-    // Cap at the most recent 200 messages — that's the typical active window.
-    // getActiveMessages() returns everything not compacted, but sessions with
-    // no compaction markers can have 30K+ messages. The model only sees the
-    // most recent batch, so we count that.
+    // Use character-based estimation per message — t.total from OpenCode metadata
+    // is cumulative context size (not per-message), so summing it would wildly
+    // overcount. The real total is shown in the Context section above.
     const ACTIVE_WINDOW = 200
     const recentMsgs = activeMsgs.slice(-ACTIVE_WINDOW)
     let activeChars = 0
-    let activeTokensMeta = 0
     for (const msg of recentMsgs) {
-      const msgChars = messageChars(msg)
-      activeChars += msgChars.chars
-      const info = msg.info as any
-      const t = info?.tokens
-      activeTokensMeta += t
-        ? ((t.total ?? 0) || (t.input + t.output + t.reasoning + (t.cache?.read ?? 0) + (t.cache?.write ?? 0)))
-        : estTokens(msgChars.chars)
+      activeChars += messageChars(msg).chars
     }
+    const activeTokensEst = estTokens(activeChars)
     const windowNote = activeMsgs.length > ACTIVE_WINDOW
       ? ` (last ${ACTIVE_WINDOW} of ${activeMsgs.length})`
       : ""
-    out += `Active messages:  ${String(activeTokensMeta).padStart(8)} tok  [measured]${windowNote}\n`
+    out += `Active messages:  ${String(activeTokensEst).padStart(8)} tok  [estimated]${windowNote}\n`
 
     // 3. OM slab [measured]
     let omChars = 0
