@@ -5,10 +5,15 @@
 
 import type { createOpencodeClient } from "@opencode-ai/sdk"
 import type { Message, Part } from "@opencode-ai/sdk"
+import { Database } from "bun:sqlite"
+import path from "path"
+import os from "os"
 
 type Client = ReturnType<typeof createOpencodeClient>
 
 export type MsgWithParts = { info: Message; parts: Part[] }
+
+const DATA_DIR = process.env.OPENCODE_DATA_DIR || path.join(os.homedir(), ".local", "share", "opencode")
 
 let _client: Client | null = null
 
@@ -21,33 +26,74 @@ export function getClient(): Client {
   return _client
 }
 
+function opencodeDb(): Database {
+  return new Database(path.join(DATA_DIR, "opencode.db"), { readonly: true })
+}
+
+export function normalizeMessageInfo(data: unknown): any {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return data
+  const info = { ...(data as Record<string, unknown>) }
+
+  // OpenCode's SDK schema accepts summary as a compaction boolean only.
+  // Older rows may contain UI summary objects like { title, diffs }; those are
+  // not ACM compaction markers and must not poison the whole session read.
+  if ("summary" in info && typeof info.summary !== "boolean") delete info.summary
+
+  return info
+}
+
+export function parseMessageInfo(json: string): any {
+  return normalizeMessageInfo(JSON.parse(json))
+}
+
+export function readMessagesFromStore(sessionID: string): MsgWithParts[] {
+  const ocDb = opencodeDb()
+  try {
+    const messages = ocDb
+      .query<{ id: string; data: string }, [string]>(
+        "SELECT id, data FROM message WHERE session_id = ? ORDER BY time_created ASC, rowid ASC",
+      )
+      .all(sessionID)
+
+    if (messages.length === 0) return []
+
+    const parts = ocDb
+      .query<{ message_id: string; data: string }, [string]>(
+        "SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created ASC, rowid ASC",
+      )
+      .all(sessionID)
+
+    const partsByMessage = new Map<string, Part[]>()
+    for (const row of parts) {
+      const list = partsByMessage.get(row.message_id) ?? []
+      list.push(JSON.parse(row.data) as Part)
+      partsByMessage.set(row.message_id, list)
+    }
+
+    return messages.map((row) => ({
+      info: parseMessageInfo(row.data) as Message,
+      parts: partsByMessage.get(row.id) ?? [],
+    }))
+  } finally {
+    ocDb.close()
+  }
+}
+
 /**
  * Convenience wrapper: get ALL messages for a session as a plain array.
- * Returns empty array on error.
- *
- * Resilience: If the server returns a 400 (schema validation failure on
- * individual messages), log a warning and return empty. The next prompt
- * cycle will retry. This prevents one bad message from killing the
- * entire batch response.
+ * Reads OpenCode's persisted message store directly. This keeps ACM's primary
+ * path deterministic when historic rows contain data shapes newer/older than
+ * the generated SDK schema accepts.
  */
 export async function getMessages(sessionID: string): Promise<MsgWithParts[]> {
-  if (!_client) return []
   try {
-    const result = await _client.session.messages({ path: { id: sessionID } })
-    if (result.error) {
-      const errName = (result.error as any)?.name || "UnknownError"
-      const errMsg = (result.error as any)?.data?.message || JSON.stringify(result.error)
-      // Only warn on non-transient errors (schema validation, not network)
-      if (errName === "BadRequest") {
-        require("fs").appendFileSync("/tmp/acm-debug.log", `[${new Date().toISOString()}] getMessages: schema validation error for session ${sessionID}: ${errMsg}\n`)
-      }
-      return []
-    }
-    if (!result.data) return []
-    return result.data as unknown as MsgWithParts[]
+    return readMessagesFromStore(sessionID)
   } catch (err: any) {
-    // Network errors, timeouts, etc. — silently return empty
-    return []
+    require("fs").appendFileSync(
+      "/tmp/acm-debug.log",
+      `[${new Date().toISOString()}] getMessages: failed to read OpenCode store for session ${sessionID}: ${err?.message ?? String(err)}\n`,
+    )
+    throw err
   }
 }
 
