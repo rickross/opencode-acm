@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "opencode-acm",
-  "version": "0.5.55",
+  "version": "0.5.56",
   "type": "module",
   "license": "MIT",
   "description": "Active Context Management plugin for OpenCode — pin, prune, scan, compact, and manage context with surgical precision",
@@ -51,6 +51,7 @@
     "build": "bun build ./src/index.ts --outdir ./dist --target node --external zod --external @opencode-ai/plugin --external @opencode-ai/sdk",
     "typecheck": "tsc --noEmit",
     "selftest:client": "bun run src/client.selftest.ts",
+    "selftest:context-guard": "bun run src/context-guard.selftest.ts",
     "prepublishOnly": "bun run build"
   }
 }

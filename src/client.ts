@@ -49,29 +49,46 @@ export function parseMessageInfo(json: string): any {
 export function readMessagesFromStore(sessionID: string): MsgWithParts[] {
   const ocDb = opencodeDb()
   try {
+    // NOTE: OpenCode's storage layer (packages/core/src/session/sql.ts +
+    // packages/opencode/src/session/message-v2.ts) strips id/sessionID/messageID
+    // out of the persisted `data` JSON blob — they live only as real SQLite
+    // columns (primary/foreign keys). OpenCode's own read path (`hydrate()` in
+    // message-v2.ts) reconstructs the full object with `{ ...row.data, id: row.id,
+    // sessionID: row.session_id }`. We must do the exact same merge here, or
+    // every `.id` access on a message/part comes back undefined.
     const messages = ocDb
-      .query<{ id: string; data: string }, [string]>(
-        "SELECT id, data FROM message WHERE session_id = ? ORDER BY time_created ASC, rowid ASC",
+      .query<{ id: string; session_id: string; data: string }, [string]>(
+        "SELECT id, session_id, data FROM message WHERE session_id = ? ORDER BY time_created ASC, rowid ASC",
       )
       .all(sessionID)
 
     if (messages.length === 0) return []
 
     const parts = ocDb
-      .query<{ message_id: string; data: string }, [string]>(
-        "SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created ASC, rowid ASC",
+      .query<{ id: string; message_id: string; session_id: string; data: string }, [string]>(
+        "SELECT id, message_id, session_id, data FROM part WHERE session_id = ? ORDER BY time_created ASC, rowid ASC",
       )
       .all(sessionID)
 
     const partsByMessage = new Map<string, Part[]>()
     for (const row of parts) {
+      const partObj = {
+        ...JSON.parse(row.data),
+        id: row.id,
+        sessionID: row.session_id,
+        messageID: row.message_id,
+      } as Part
       const list = partsByMessage.get(row.message_id) ?? []
-      list.push(JSON.parse(row.data) as Part)
+      list.push(partObj)
       partsByMessage.set(row.message_id, list)
     }
 
     return messages.map((row) => ({
-      info: parseMessageInfo(row.data) as Message,
+      info: {
+        ...parseMessageInfo(row.data),
+        id: row.id,
+        sessionID: row.session_id,
+      } as Message,
       parts: partsByMessage.get(row.id) ?? [],
     }))
   } finally {
