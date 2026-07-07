@@ -7,6 +7,7 @@
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
 import * as fs from "fs/promises"
+import * as path from "path"
 import { createRequire } from "module"
 import type { Part } from "@opencode-ai/sdk"
 import * as Store from "./store.js"
@@ -22,6 +23,21 @@ const PKG_VERSION: string = _require("../package.json").version
 
 function findMsg(msgs: MsgWithParts[], idOrPartial: string): MsgWithParts | undefined {
   return msgs.find((m) => m.info.id === idOrPartial || m.info.id.endsWith(idOrPartial) || m.info.id.includes(idOrPartial))
+}
+
+/**
+ * OpenCode's server can, in some multi-directory setups, instantiate a
+ * session for a directory other than the one this process was actually
+ * launched in (ctx.directory may not match process.cwd()). We only read
+ * ctx.directory-relative files (AGENTS.md, opencode.json) for informational
+ * token estimates in acm_info — never for anything stateful — but there's
+ * no reason to trust a directory value that doesn't match our own process.
+ * This is a generic sanity check, not configuration — no owner/allowlist,
+ * just "does this match where we're actually running."
+ */
+function isTrustedDirectory(directory: string | undefined): directory is string {
+  if (!directory) return false
+  return path.resolve(process.cwd()) === path.resolve(directory)
 }
 
 /**
@@ -295,7 +311,7 @@ messages, OM slab, ACM injections, AGENTS.md, MCP schemas. This is the full
       `${process.env.HOME}/.config/opencode/AGENTS.md`,
       `${process.env.HOME}/.horde/AGENTS.md`,
     ]
-    if (ctx.directory) agentsMdPaths.unshift(`${ctx.directory}/AGENTS.md`)
+    if (isTrustedDirectory(ctx.directory)) agentsMdPaths.unshift(`${ctx.directory}/AGENTS.md`)
     for (const p of agentsMdPaths) {
       try { agentsMdChars += (await fs.readFile(p, "utf-8")).length } catch {}
     }
@@ -308,7 +324,7 @@ messages, OM slab, ACM injections, AGENTS.md, MCP schemas. This is the full
     let mcpServerCount = 0
     const configPaths = [
       `${process.env.HOME}/.config/opencode/opencode.json`,
-      ...(ctx.directory ? [`${ctx.directory}/opencode.json`] : []),
+      ...(isTrustedDirectory(ctx.directory) ? [`${ctx.directory}/opencode.json`] : []),
     ]
     for (const p of configPaths) {
       try {
@@ -718,19 +734,30 @@ Pairs with acm_prune for surgical context reduction.`,
 
     interface Item { id: string; chars: number; minutesAgo: number; role: string; preview: string; compacted: boolean; pinned: boolean }
     const items: Item[] = []
+    const malformed: string[] = []
 
-    for (const msg of msgs) {
-      const entry = Store.getEntry(ctx.sessionID, msg.info.id)
+    for (let index = 0; index < msgs.length; index++) {
+      const msg = msgs[index]
+      const msgInfo = (msg as any)?.info ?? {}
+      const msgId = typeof msgInfo.id === "string" && msgInfo.id.length > 0 ? msgInfo.id : null
+      if (!msgId) {
+        malformed.push(`index ${index}: missing message id`)
+        continue
+      }
+
+      const entry = Store.getEntry(ctx.sessionID, msgId)
       if (entry?.compacted && !params.show_compacted) continue
 
       const { chars, preview } = messageChars(msg)
       if (chars < minBytes) continue
 
+      const created = typeof msgInfo.time?.created === "number" ? msgInfo.time.created : now
+
       items.push({
-        id: msg.info.id,
+        id: msgId,
         chars,
-        minutesAgo: Math.round((now - msg.info.time.created) / 60000),
-        role: (msg.info as any).role ?? "unknown",
+        minutesAgo: Math.max(0, Math.round((now - created) / 60000)),
+        role: msgInfo.role ?? "unknown",
         preview: preview.replace(/\n/g, "\\n"),
         compacted: entry?.compacted ?? false,
         pinned: entry?.pinned ?? false,
@@ -743,6 +770,9 @@ Pairs with acm_prune for surgical context reduction.`,
       // Sort by creation time (oldest first) for comparison with acm_map
       const byTime = [...items].sort((a, b) => a.minutesAgo - b.minutesAgo)
       let output = `SCAN DEBUG: ${items.length} messages, ${Math.round(totalKchars * 1000)} chars total\n\n`
+      if (malformed.length > 0) {
+        output += `Skipped malformed rows (${malformed.length}): ${malformed.slice(0, 5).join("; ")}${malformed.length > 5 ? "; ..." : ""}\n\n`
+      }
       output += `${"ID".padEnd(32)} ${"chars".padStart(8)} role\n`
       output += `${"─".repeat(32)} ${"─".repeat(8)} ${"─".repeat(10)}\n`
       for (const item of byTime) {
@@ -760,6 +790,9 @@ Pairs with acm_prune for surgical context reduction.`,
     let output = minKbDisplay > 0
       ? `Scan results (>~${minKbDisplay}K chars): ${items.length} items, ~${Math.round(totalKchars)}K chars total\n\n`
       : `Scan results (all): ${items.length} items, ~${Math.round(totalKchars)}K chars total\n\n`
+    if (malformed.length > 0) {
+      output += `Skipped malformed rows (${malformed.length}): ${malformed.slice(0, 5).join("; ")}${malformed.length > 5 ? "; ..." : ""}\n\n`
+    }
     for (const item of items) {
       const tags = [item.pinned ? "PINNED" : "", item.compacted ? "COMPACTED" : ""].filter(Boolean).join(",")
       output += `${item.id.slice(-12)}  ~${Math.round(item.chars / 1000)}K chars  ${item.minutesAgo}m ago  [${item.role}]${tags ? ` (${tags})` : ""}\n`

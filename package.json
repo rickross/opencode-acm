@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "opencode-acm",
-  "version": "0.5.56",
+  "version": "0.5.57",
   "type": "module",
   "license": "MIT",
   "description": "Active Context Management plugin for OpenCode — pin, prune, scan, compact, and manage context with surgical precision",
@@ -37,8 +37,8 @@
     ]
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.15.7",
-    "@opencode-ai/sdk": "1.15.7",
+    "@opencode-ai/plugin": "1.17.14",
+    "@opencode-ai/sdk": "1.17.14",
     "zod": "^4.0.0"
   },
   "devDependencies": {
